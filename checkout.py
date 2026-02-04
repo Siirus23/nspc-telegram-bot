@@ -631,17 +631,20 @@ async def admin_approve(message: Message):
             chat_id=user_id,
             text=(
                 "✅ Payment verified!\n\n"
-                "📮 Next Step: Shipping Details\n"
-                "Please copy and fill this template exactly and send it back:\n"
-                "----------------------------------------------\n"
-                "Name :\n"
-                "Street Name :\n"
-                "Unit Number :\n"
-                "Postal Code :\n"
-                "Phone Number :\n"
-                "----------------------------------------------\n"
+                "📮 *Next Step: Shipping Details*\n\n"
+                "Copy the example below, edit the details, and send it back "
+                "in *ONE message*.\n\n"
+                "————— DELETE ABOVE —————\n"
+                "Name : John Tan\n"
+                "Street Name : 123 ABC Road\n"
+                "Unit Number : #10-01\n"
+                "Postal Code : 123456\n"
+                "Phone Number : 91234567\n"
+                "————— DELETE BELOW —————\n\n"
+                "⚠️ Keep the field names the same. Only change the details.\n\n"
                 f"Invoice: {invoice_no}"
-            )
+            ),
+            parse_mode="HTML"
         )
 
         await message.answer(f"✅ Approved {invoice_no} (awaiting address)")
