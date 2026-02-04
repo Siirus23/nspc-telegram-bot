@@ -1,5 +1,7 @@
-BOT_TOKEN = os.getenv("8167815031:AAFCTW9gA4jJsR3bA8JktPW80ygtvrL5CZY")
-ADMIN_ID = int(os.getenv(542964874))
-CHANNEL_ID = int(os.getenv(-1003863897850))
-CHANNEL_USERNAME = "NightShadePokeClaims"
+import os
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
 
