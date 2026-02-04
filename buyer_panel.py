@@ -97,7 +97,7 @@ async def resend_invoice_prompt(cb: CallbackQuery):
     await cb.answer()
 
 
-@router.message(F.text)
+@router.message(F.chat.type == "private", F.text.regexp(r"^INV-\d+"))
 async def resend_invoice(message: Message):
 
     sess = get_admin_session(message.from_user.id)
