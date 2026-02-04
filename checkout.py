@@ -6,6 +6,48 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMedia
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
+# ─────────────────────────────
+# Address parsing helpers (PUT IT HERE)
+# ─────────────────────────────
+
+ADDRESS_FIELDS = [
+    "Name",
+    "Street Name",
+    "Unit Number",
+    "Postal Code",
+    "Phone Number",
+]
+
+def parse_address_block(text: str) -> dict | None:
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    data = {}
+
+    for line in lines:
+        if ":" not in line:
+            continue
+
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+
+        for field in ADDRESS_FIELDS:
+            if key == field.lower():
+                data[field] = value
+
+    if any(not data.get(f) for f in ADDRESS_FIELDS):
+        return None
+
+    return {
+        "name": data["Name"],
+        "street": data["Street Name"],
+        "unit": data["Unit Number"],
+        "postal": re.sub(r"\s+", "", data["Postal Code"]),
+        "phone": re.sub(r"\s+", "", data["Phone Number"]),
+    }
+
+# ─────────────────────────────
+# Existing checkout logic continues below
+# ─────────────────────────────
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from callbacks import PaymentReviewCB
