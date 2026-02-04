@@ -1,14 +1,33 @@
-from email.mime import image
+import os
 import re
-import pytesseract
 from PIL import Image
 from io import BytesIO
+
+# Default OFF on Render. Turn ON only when you have Tesseract installed.
+OCR_ENABLED = os.getenv("OCR_ENABLED", "0") == "1"
+
+# Only import pytesseract when OCR is enabled (prevents Render crash)
+if OCR_ENABLED:
+    try:
+        import pytesseract
+    except ImportError:
+        pytesseract = None
+else:
+    pytesseract = None
 
 
 async def extract_text_from_photo(bot, message):
     """
-    Downloads the photo sent by admin and runs OCR on it
+    Downloads the photo sent by admin and runs OCR on it.
+    If OCR is disabled/unavailable, returns empty string safely.
     """
+    if not OCR_ENABLED:
+        return ""
+
+    if pytesseract is None:
+        # pytesseract not installed in this environment
+        return ""
+
     try:
         # Get the highest resolution photo
         photo = message.photo[-1]
@@ -25,8 +44,6 @@ async def extract_text_from_photo(bot, message):
         image = image.point(lambda x: 0 if x < 140 else 255)
 
         text = pytesseract.image_to_string(image)
-
-
         return text
 
     except Exception as e:
@@ -39,7 +56,6 @@ def extract_tracking_number(text: str):
     Extracts SingPost tracking number safely from OCR text
     with validation and normalization
     """
-
     if not text:
         return None
 
@@ -51,7 +67,6 @@ def extract_tracking_number(text: str):
     clean = clean.replace("S", "5")   # S -> 5 (sometimes)
 
     pattern = re.compile(r"[A-Z]{2}\d{9}SG")
-
     match = pattern.search(clean)
 
     if not match:
