@@ -346,10 +346,22 @@ async def admin_tracking_photo(message: Message):
         return
 
     text = await extract_text_from_photo(message.bot, message)
+
+    # OCR disabled/unavailable (Render) OR OCR failed to read anything
+    if not text:
+        await message.answer(
+            "⚠️ OCR is disabled/unavailable on this server.\n"
+            "Please type the tracking number manually (e.g. RR123456789SG)."
+        )
+        return
+
     tracking = extract_tracking_number(text)
 
     if not tracking:
-        await message.answer("❌ Could not detect tracking from image.")
+        await message.answer(
+            "❌ Could not detect tracking from image.\n"
+            "Please type the tracking number manually (e.g. RR123456789SG)."
+        )
         return
 
     message.text = tracking
