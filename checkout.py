@@ -929,7 +929,7 @@ async def addr_confirm(cb: CallbackQuery):
         cur.execute("SELECT * FROM shipping_address WHERE order_id = ?", (order_id,))
         a = cur.fetchone()
 
-    # Notify Admin: order ready to ship
+    # Notify Admin: order ready to pack
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Marked Shipped", callback_data=ShippingActionCB(action="start", invoice=invoice_no).pack())
     kb.button(text="❌ Cancel Order", callback_data=ShippingActionCB(action="cancel", invoice=invoice_no).pack())
@@ -942,7 +942,7 @@ async def addr_confirm(cb: CallbackQuery):
             f"Invoice: <code>{invoice_no}</code>\n"
             f"Buyer: @{cb.from_user.username or 'NoUsername'}\n"
             f"User ID: <code>{user_id}</code>\n\n"
-            "Status: <b>READY TO SHIP</b>\n\n"
+            "Status: <b>READY TO PACK</b>\n\n"
             "Choose an action:"
         ),
         parse_mode="HTML",
@@ -961,7 +961,7 @@ async def addr_confirm(cb: CallbackQuery):
         "📋 <b>Order Status</b>\n"
         "• Payment proof: ✅ Received\n"
         "• Shipping address: ✅ Confirmed\n"
-        "• Next: 📦 Seller will ship and send tracking\n\n"
+        "• Next: 📦 Seller will proceed with packing your order\n\n"
         f"Invoice: <code>{invoice_no}</code>",
         parse_mode="HTML",
     )
