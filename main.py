@@ -7,7 +7,8 @@ from aiogram.types import Message
 from config import BOT_TOKEN
 from db import init_db
 
-from handlers import admin, claims
+import admin
+import claims
 import checkout
 import shipping_admin
 import text_dispatcher

@@ -13,7 +13,9 @@ from db import (
     get_db,
     set_admin_session,
     get_admin_session,
-    clear_admin_session
+    clear_admin_session,
+    set_shipping_proof,
+    get_shipping_proof
 )
 
 from config import ADMIN_ID, CHANNEL_ID
@@ -703,6 +705,13 @@ async def admin_tracking_photo(message: Message):
         await message.answer("⚠️ No active shipping session.")
         return
 
+
+    # Save proof-of-shipping photo (always), even if OCR fails/unavailable
+    invoice_no = sess.get("invoice_no")
+    if invoice_no and message.photo:
+        proof_file_id = message.photo[-1].file_id
+        set_shipping_proof(invoice_no, proof_file_id)
+
     text = await extract_text_from_photo(message.bot, message)
 
     if not text:
@@ -805,6 +814,19 @@ async def process_tracking_text(message: Message) -> bool:
     await message.answer(f"✅ Tracking saved for <code>{invoice_no}</code>", parse_mode="HTML")
 
     if row:
+
+        proof_file_id = get_shipping_proof(invoice_no)
+        if proof_file_id:
+            try:
+                await message.bot.send_photo(
+                    chat_id=row["user_id"],
+                    photo=proof_file_id,
+                    caption="📦 Proof of shipping",
+                )
+            except Exception:
+                # If photo fails (e.g. file_id invalid), still send tracking text
+                pass
+
         await message.bot.send_message(
             chat_id=row["user_id"],
             text=(

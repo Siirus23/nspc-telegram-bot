@@ -59,7 +59,8 @@ def init_db():
             total REAL NOT NULL,
             status TEXT DEFAULT 'pending_payment',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            tracking_number TEXT
+            tracking_number TEXT,
+            shipping_proof_file_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS order_items (
@@ -116,6 +117,18 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        """
+
+        # --- Lightweight migrations (safe to run every startup) ---
+        def _column_exists(table: str, column: str) -> bool:
+            cur = conn.execute(f"PRAGMA table_info({table})")
+            return any(r[1] == column for r in cur.fetchall())
+
+        if not _column_exists("orders", "shipping_proof_file_id"):
+            conn.execute("ALTER TABLE orders ADD COLUMN shipping_proof_file_id TEXT")
+
+
+
 
         
 
@@ -150,3 +163,25 @@ def get_admin_session(admin_id: int):
 def clear_admin_session(admin_id: int):
     with get_db() as conn:
         conn.execute("DELETE FROM admin_sessions WHERE admin_id = ?", (admin_id,))
+
+
+# =========================
+# SHIPPING PROOF HELPERS
+# =========================
+
+def set_shipping_proof(invoice_no: str, file_id: str):
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE orders SET shipping_proof_file_id = ? WHERE invoice_no = ?",
+            (file_id, invoice_no),
+        )
+
+def get_shipping_proof(invoice_no: str):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT shipping_proof_file_id FROM orders WHERE invoice_no = ?",
+            (invoice_no,),
+        )
+        row = cur.fetchone()
+        return row["shipping_proof_file_id"] if row else None
