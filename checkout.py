@@ -1,15 +1,37 @@
+# checkout.py
 import re
-from datetime import datetime
 from typing import Optional
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 
 from aiogram import Router, F
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery, BufferedInputFile
-# ─────────────────────────────
-# Address parsing helpers (PUT IT HERE)
-# ─────────────────────────────
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BufferedInputFile,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from config import ADMIN_ID, CHANNEL_ID, CHANNEL_USERNAME
+from db import get_db
+from invoice_pdf import build_invoice_pdf
+from callbacks import PaymentReviewCB, ShippingActionCB
+
+router = Router()
+
+# =========================
+# CONFIG
+# =========================
+PAYNOW_NUMBER = "93385994"
+PAYNOW_NAME = "Naufal"
+
+TRACKED_FEE_SGD = 3.50
+SELF_PICKUP_TEXT = "806 Woodlands St 81, in front of Rainbow Mart"
+
+# =========================
+# ADDRESS PARSING (robust)
+# =========================
 ADDRESS_FIELDS = [
     "Name",
     "Street Name",
@@ -19,13 +41,23 @@ ADDRESS_FIELDS = [
 ]
 
 def parse_address_block(text: str) -> dict | None:
+    """
+    Accepts an address block like:
+    Name : John Tan
+    Street Name : 123 ABC Road
+    Unit Number : #10-01
+    Postal Code : 123456
+    Phone Number : 91234567
+    """
+    if not text:
+        return None
+
     lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
     data = {}
 
     for line in lines:
         if ":" not in line:
             continue
-
         key, value = line.split(":", 1)
         key = key.strip().lower()
         value = value.strip()
@@ -34,99 +66,32 @@ def parse_address_block(text: str) -> dict | None:
             if key == field.lower():
                 data[field] = value
 
+    # must contain all fields
     if any(not data.get(f) for f in ADDRESS_FIELDS):
         return None
 
     return {
-        "name": data["Name"],
-        "street": data["Street Name"],
-        "unit": data["Unit Number"],
+        "name": data["Name"].strip(),
+        "street": data["Street Name"].strip(),
+        "unit": data["Unit Number"].strip(),
         "postal": re.sub(r"\s+", "", data["Postal Code"]),
         "phone": re.sub(r"\s+", "", data["Phone Number"]),
     }
 
-# ─────────────────────────────
-# Existing checkout logic continues below
-# ─────────────────────────────
-from aiogram.utils.keyboard import InlineKeyboardBuilder
+def address_template() -> str:
+    return (
+        "————— COPY FROM HERE —————\n"
+        "Name :\n"
+        "Street Name :\n"
+        "Unit Number :\n"
+        "Postal Code :\n"
+        "Phone Number :\n"
+        "————— COPY UNTIL HERE —————"
+    )
 
-from callbacks import PaymentReviewCB
-from aiogram.types import CallbackQuery
-from config import ADMIN_ID, CHANNEL_ID, CHANNEL_USERNAME
-from db import get_db
-from invoice_pdf import build_invoice_pdf
-from callbacks import PaymentReviewCB
-
-router = Router()
-
-# ====== CONFIG ======
-PAYNOW_NUMBER = "93385994"
-PAYNOW_NAME = "Naufal"
-
-TRACKED_FEE_SGD = 3.50
-SELF_PICKUP_TEXT = "806 Woodlands St 81, in front of Rainbow Mart"
-
-
-# ====== HELPERS ======
-
-async def show_available_cards(bot, user_id):
-    with get_db() as conn:
-        cur = conn.cursor()
-
-        cur.execute("""
-            SELECT channel_chat_id, channel_message_id, card_name, price, remaining_qty
-            FROM card_listing
-            WHERE remaining_qty > 0
-            AND channel_message_id != 0
-            ORDER BY id ASC
-        """)
-
-        cards = cur.fetchall()
-
-    if not cards:
-        await bot.send_message(
-            chat_id=user_id,
-            text="📭 No additional cards currently available."
-        )
-        return
-
-    for c in cards:
-        chat_id = c["channel_chat_id"]
-        mid = c["channel_message_id"]
-        name = c["card_name"]
-        price = c["price"]
-        remaining = c["remaining_qty"]
-
-        # Build caption exactly like channel
-        caption = f"{name}\nPrice: {price}\nAvailable: {remaining}"
-
-        # Create link button
-        link = make_post_link(chat_id, CHANNEL_USERNAME, mid)
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Open Post in Channel", url=link)]
-        ])
-
-        try:
-            # Forward the original post to the user
-            await bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=chat_id,
-                message_id=mid
-            )
-
-            # Send our structured info under it
-            await bot.send_message(
-                chat_id=user_id,
-                text="🔗 Open the post using the button below:",
-                reply_markup=kb
-            )
-
-
-        except Exception as e:
-            print("Error showing available card:", e)
-
-
+# =========================
+# HELPERS
+# =========================
 def parse_price_to_float(price_str: str) -> float:
     s = (price_str or "").strip().upper()
     s = s.replace("SGD", "").replace("$", "").strip()
@@ -135,49 +100,53 @@ def parse_price_to_float(price_str: str) -> float:
     except ValueError:
         return 0.0
 
-
 def make_post_link(channel_chat_id: int, channel_username: str, post_mid: int) -> str:
     username = (channel_username or "").strip().lstrip("@")
     if username:
         return f"https://t.me/{username}/{post_mid}"
 
-    # fallback (private channel link format)
+    # private channel fallback: https://t.me/c/<internal>/<mid>
     s = str(abs(int(channel_chat_id)))
     internal = s[3:] if s.startswith("100") and len(s) > 3 else s
     return f"https://t.me/c/{internal}/{post_mid}"
 
+async def show_available_cards(bot, user_id: int):
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT channel_chat_id, channel_message_id, card_name, price, remaining_qty
+            FROM card_listing
+            WHERE remaining_qty > 0
+              AND channel_message_id != 0
+            ORDER BY id ASC
+            """
+        )
+        cards = cur.fetchall()
 
-def kb_delivery():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📦 Tracked Mail", callback_data="checkout:delivery:tracked")
-    kb.button(text="🏠 Self Collection", callback_data="checkout:delivery:self")
-    kb.button(text="🙋 Human Help", callback_data="checkout:delivery:human")
-    kb.adjust(1)
-    return kb.as_markup()
+    if not cards:
+        await bot.send_message(chat_id=user_id, text="📭 No additional cards currently available.")
+        return
 
+    for c in cards:
+        chat_id = c["channel_chat_id"]
+        mid = int(c["channel_message_id"])
+        link = make_post_link(chat_id, CHANNEL_USERNAME, mid)
 
-def kb_yes_no_browse():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Yes", callback_data="checkout:browse:yes")
-    kb.button(text="➡️ No, continue", callback_data="checkout:browse:no")
-    kb.adjust(2)
-    return kb.as_markup()
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="🔗 Open Post in Channel", url=link)]]
+        )
 
-
-def kb_continue():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🛒 Confirm Checkout", callback_data="checkout:continue")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-def kb_confirm_address():
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Yes, Confirm", callback_data="checkout:address:confirm")
-    kb.button(text="❌ No, re-enter", callback_data="checkout:address:reenter")
-    kb.adjust(2)
-    return kb.as_markup()
-
+        try:
+            # Forward original post to keep media + context
+            await bot.forward_message(chat_id=user_id, from_chat_id=chat_id, message_id=mid)
+            await bot.send_message(
+                chat_id=user_id,
+                text="🕯️ Tap to open the post in the channel:",
+                reply_markup=kb,
+            )
+        except Exception as e:
+            print("Error showing available card:", e)
 
 def upsert_checkout(user_id: int, **fields):
     with get_db() as conn:
@@ -199,7 +168,6 @@ def upsert_checkout(user_id: int, **fields):
 
         cur.execute(f"UPDATE user_checkout SET {', '.join(sets)} WHERE user_id = ?", vals)
 
-
 def get_checkout(user_id: int) -> Optional[dict]:
     with get_db() as conn:
         cur = conn.cursor()
@@ -207,15 +175,62 @@ def get_checkout(user_id: int) -> Optional[dict]:
         row = cur.fetchone()
         return dict(row) if row else None
 
+# =========================
+# KEYBOARDS (NightShade Poké Mart - dark goofy)
+# =========================
+def kb_buyer_home(has_claims: bool):
+    kb = InlineKeyboardBuilder()
 
-# ==========================================================
-# BUYER FLOW
-# ==========================================================
+    if has_claims:
+        kb.button(text="🦇 Checkout Counter (Delivery)", callback_data="buyer:go_delivery")
+        kb.button(text="🕯️ Browse the Shelves", callback_data="buyer:browse_now")
+        kb.button(text="🎒 My Bag (Buyer Panel)", callback_data="buyer:panel")
+        kb.button(text="🧛 Summon Shopkeeper (Help)", callback_data="buyer:help")
+        kb.adjust(1, 2, 1)
+    else:
+        kb.button(text="🕯️ Browse the Shelves", callback_data="buyer:browse_now")
+        kb.button(text="📜 Trainer Guide (How to Claim)", callback_data="buyer:howto")
+        kb.button(text="🧛 Summon Shopkeeper (Help)", callback_data="buyer:help")
+        kb.adjust(1, 2)
 
+    return kb.as_markup()
+
+def kb_delivery():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📦 Tracked Mail (Bat Express)", callback_data="checkout:delivery:tracked")
+    kb.button(text="🏠 Self Collection (IRL Trade)", callback_data="checkout:delivery:self")
+    kb.button(text="🧛 Summon Shopkeeper (Help)", callback_data="checkout:delivery:human")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def kb_yes_no_browse():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🕯️ Yes, show shelves", callback_data="checkout:browse:yes")
+    kb.button(text="🧾 No, generate invoice", callback_data="checkout:browse:no")
+    kb.adjust(2)
+    return kb.as_markup()
+
+def kb_continue():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🧾 Forge Invoice (Confirm Checkout)", callback_data="checkout:continue")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def kb_confirm_address():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Yes, Confirm", callback_data="checkout:address:confirm")
+    kb.button(text="❌ No, re-enter", callback_data="checkout:address:reenter")
+    kb.adjust(2)
+    return kb.as_markup()
+
+# =========================
+# CLAIM SUMMARY
+# =========================
 def get_user_claims_summary(user_id: int):
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT
                 cl.card_name AS card_name,
                 cl.price AS price_str,
@@ -231,21 +246,22 @@ def get_user_claims_summary(user_id: int):
               AND c.status = 'active'
             GROUP BY cl.card_name, cl.price, cl.channel_message_id
             ORDER BY first_order ASC
-        """, (CHANNEL_ID, user_id))
-
+            """,
+            (CHANNEL_ID, user_id),
+        )
         rows = cur.fetchall()
 
     items = []
     for r in rows:
-        items.append({
-            "card_name": r["card_name"],
-            "price": parse_price_to_float(r["price_str"]),
-            "post_mid": int(r["post_mid"]),
-            "qty": int(r["qty"]),
-        })
-
+        items.append(
+            {
+                "card_name": r["card_name"],
+                "price": parse_price_to_float(r["price_str"]),
+                "post_mid": int(r["post_mid"]),
+                "qty": int(r["qty"]),
+            }
+        )
     return items
-
 
 def format_claim_summary(items):
     total = 0.0
@@ -253,9 +269,8 @@ def format_claim_summary(items):
 
     for i, it in enumerate(items, start=1):
         card = it["card_name"]
-        qty = it["qty"]
+        qty = int(it["qty"])
         price = float(it["price"])
-
         total += price * qty
 
         if qty == 1:
@@ -266,36 +281,34 @@ def format_claim_summary(items):
     lines.append(f"\n<b>Total: ${total:.2f} SGD</b>")
     return "\n".join(lines), total
 
-
+# =========================
+# BUYER HOME (/start) - clean UI/UX
+# =========================
 @router.message(F.chat.type == "private", Command("start"))
 async def dm_start(message: Message):
-    await message.answer(
-    "👋 <b>Welcome!</b>\n\n"
-    "🎉 Let’s prepare your checkout.\n"
-    "You will receive your invoice after confirming your delivery option.\n\n"
-    "💡 After checkout, you can manage everything using:\n"
-    "👉 <b>/buyerpanel</b>\n\n"
-    "There you can:\n"
-    "• View your orders\n"
-    "• Resend invoices\n"
-    "• Edit shipping address\n"
-    "• Check your claims\n\n"
-    "Thank you for your patience! 🙂",
-    parse_mode="HTML"
-)
-
-
-    items = get_user_claims_summary(message.from_user.id)
+    user_id = message.from_user.id
+    items = get_user_claims_summary(user_id)
 
     if not items:
-        await message.answer("⚠️ You have no active claims right now.")
-        upsert_checkout(message.from_user.id, stage="idle")
+        upsert_checkout(user_id, stage="idle")
+
+        await message.answer(
+            "🌑🏪 <b>NightShade Poké Claims — Poké Mart Counter</b>\n"
+            "Welcome, Trainer… don’t mind the creaking shelves 😌🕯️\n\n"
+            "<b>How to claim a card:</b>\n"
+            "1) Open a card post in the channel\n"
+            "2) Reply <b>claim</b> under that post’s comments/thread\n\n"
+            "When you’ve claimed something, come back here for checkout. 🧾✨",
+            parse_mode="HTML",
+            reply_markup=kb_buyer_home(has_claims=False),
+        )
         return
 
     summary_text, cards_total = format_claim_summary(items)
 
+    # Reset to checkout flow entry
     upsert_checkout(
-        message.from_user.id,
+        user_id,
         stage="choose_delivery",
         cards_total=cards_total,
         delivery_fee=0,
@@ -305,18 +318,86 @@ async def dm_start(message: Message):
     )
 
     await message.answer(
-        summary_text +
-        "\n\n📦 <b>Choose your delivery method:</b>\n"
-        f"• Tracked Mail: +${TRACKED_FEE_SGD:.2f} delivery charge\n"
-        "• Self Collection: No extra charge\n"
-        f"📍 Pickup: {SELF_PICKUP_TEXT}\n\n"
-        "Please select your preferred option below:\n\n"
-        "🧾 <i>Invoice will be generated only after you confirm checkout.</i>",
+        "🧺🕯️ <b>NightShade Basket Check</b>\n"
+        "Hehe… your bag has loot. What’s next?\n\n"
+        f"{summary_text}\n\n"
+        "🦇 Tap <b>Checkout Counter</b> to pick delivery and generate your invoice.",
         parse_mode="HTML",
-        reply_markup=kb_delivery()
+        reply_markup=kb_buyer_home(has_claims=True),
     )
 
+# Buyer home buttons
+@router.callback_query(F.data == "buyer:go_delivery")
+async def buyer_go_delivery(cb: CallbackQuery):
+    user_id = cb.from_user.id
 
+    # Rebuild stage if needed
+    items = get_user_claims_summary(user_id)
+    if not items:
+        upsert_checkout(user_id, stage="idle")
+        await cb.message.answer("⚠️ You have no active claims right now.")
+        await cb.answer()
+        return
+
+    _, cards_total = format_claim_summary(items)
+    upsert_checkout(
+        user_id,
+        stage="choose_delivery",
+        cards_total=cards_total,
+        delivery_fee=0,
+        total=cards_total,
+        invoice_no=None,
+        delivery_method=None,
+    )
+
+    await cb.message.answer(
+        "🦇 <b>Checkout Counter</b>\n\n"
+        "<b>Choose delivery:</b>\n"
+        f"• 📦 Tracked Mail: +${TRACKED_FEE_SGD:.2f} SGD\n"
+        "• 🏠 Self Collection: $0\n"
+        f"📍 Pickup: {SELF_PICKUP_TEXT}\n\n"
+        "Select below:",
+        parse_mode="HTML",
+        reply_markup=kb_delivery(),
+    )
+    await cb.answer()
+
+@router.callback_query(F.data == "buyer:browse_now")
+async def buyer_browse_now(cb: CallbackQuery):
+    await cb.message.answer("🕯️ The shelves are shifting… showing available cards.")
+    await show_available_cards(bot=cb.message.bot, user_id=cb.from_user.id)
+    await cb.answer()
+
+@router.callback_query(F.data == "buyer:panel")
+async def buyer_panel_hint(cb: CallbackQuery):
+    await cb.message.answer("🎒 Open your buyer panel with: <b>/buyerpanel</b>", parse_mode="HTML")
+    await cb.answer()
+
+@router.callback_query(F.data == "buyer:help")
+async def buyer_help(cb: CallbackQuery):
+    await cb.message.answer(
+        "🧛 <b>Shopkeeper Help Desk</b>\n\n"
+        "• Can’t claim? Make sure you replied <b>under the card post thread</b> (comments).\n"
+        "• Checkout looks wrong? Type <b>/start</b> again.\n"
+        "• Special cases? DM the admin.",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+@router.callback_query(F.data == "buyer:howto")
+async def buyer_howto(cb: CallbackQuery):
+    await cb.message.answer(
+        "📜 <b>Trainer Guide — How to Claim</b>\n\n"
+        "1) Open a card post in the channel\n"
+        "2) Reply <b>claim</b> under that post’s comments/thread\n"
+        "3) When done, come back here and press <b>/start</b> to checkout 🧾✨",
+        parse_mode="HTML",
+    )
+    await cb.answer()
+
+# =========================
+# CHECKOUT FLOW
+# =========================
 @router.callback_query(F.data.startswith("checkout:delivery:"))
 async def delivery_pick(cb: CallbackQuery):
     user_id = cb.from_user.id
@@ -330,7 +411,7 @@ async def delivery_pick(cb: CallbackQuery):
     choice = parts[2] if len(parts) >= 3 else ""
 
     if choice == "human":
-        await cb.message.answer("🙋 Please DM the admin for help.")
+        await cb.message.answer("🧛 Please DM the admin for help.")
         await cb.answer()
         return
 
@@ -338,36 +419,34 @@ async def delivery_pick(cb: CallbackQuery):
         delivery_fee = TRACKED_FEE_SGD
         method = "tracked"
     elif choice == "self":
-        delivery_fee = 0
+        delivery_fee = 0.0
         method = "self"
     else:
         await cb.answer("Invalid option", show_alert=True)
         return
 
     cards_total = float(ck.get("cards_total") or 0)
-    total = cards_total + delivery_fee
+    total = cards_total + float(delivery_fee)
 
     upsert_checkout(
         user_id,
         delivery_method=method,
         delivery_fee=delivery_fee,
         total=total,
-        stage="awaiting_browse"
+        stage="awaiting_browse",
     )
 
     await cb.message.answer(
-        "Would you like to see cards that are not yet claimed or still have copies left?",
-        reply_markup=kb_yes_no_browse()
+        "🕯️ Want to peek at what’s still lurking on the shelves before invoice?",
+        reply_markup=kb_yes_no_browse(),
     )
     await cb.answer()
-
 
 @router.callback_query(F.data.startswith("checkout:browse:"))
 async def browse_decision(cb: CallbackQuery):
     user_id = cb.from_user.id
     ck = get_checkout(user_id) or {}
 
-    # keep stage as awaiting_browse until invoice is generated
     if ck.get("stage") != "awaiting_browse":
         await cb.answer()
         return
@@ -376,28 +455,18 @@ async def browse_decision(cb: CallbackQuery):
 
     if choice == "yes":
         await cb.message.answer("🔍 Showing currently available cards...")
-
-        await show_available_cards(
-            bot=cb.message.bot,
-            user_id=user_id
-        )
-
-        await cb.message.answer(
-            "When you're ready to continue with your invoice:",
-            reply_markup=kb_continue()
-        )
+        await show_available_cards(bot=cb.message.bot, user_id=user_id)
+        await cb.message.answer("When you’re ready to forge your invoice:", reply_markup=kb_continue())
     else:
-        await cb.message.answer("🧾 Continuing to invoice generation.🧾", reply_markup=kb_continue())
+        await cb.message.answer("🧾 Forging invoice…", reply_markup=kb_continue())
 
     await cb.answer()
-
 
 @router.callback_query(F.data == "checkout:continue")
 async def checkout_continue(cb: CallbackQuery):
     user_id = cb.from_user.id
     ck = get_checkout(user_id) or {}
 
-    # must still be in awaiting_browse to avoid old button presses
     if ck.get("stage") != "awaiting_browse":
         await cb.answer("This button is no longer valid.", show_alert=True)
         return
@@ -416,50 +485,53 @@ async def checkout_continue(cb: CallbackQuery):
 
     _, cards_total = format_claim_summary(items)
     delivery_fee = float(ck.get("delivery_fee") or 0)
-    total = cards_total + delivery_fee
+    total = float(cards_total) + float(delivery_fee)
 
     # ---- Create order FIRST, then derive invoice from order_id (race-safe) ----
     with get_db() as conn:
         cur = conn.cursor()
         conn.execute("BEGIN IMMEDIATE")
 
-        # Insert with NULL invoice_no (allowed by schema update in db.py)
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO orders
             (invoice_no, user_id, username, delivery_method, cards_total, delivery_fee, total, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            None,
-            user_id,
-            cb.from_user.username or "",
-            method,
-            cards_total,
-            delivery_fee,
-            total,
-            "pending_payment"
-        ))
+            """,
+            (
+                None,
+                user_id,
+                cb.from_user.username or "",
+                method,
+                cards_total,
+                delivery_fee,
+                total,
+                "pending_payment",
+            ),
+        )
 
         order_id = cur.lastrowid
         invoice_no = f"INV-{order_id:06d}"
-
         cur.execute("UPDATE orders SET invoice_no = ? WHERE id = ?", (invoice_no, order_id))
 
         for it in items:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO order_items
                 (order_id, card_name, price, post_message_id, qty)
                 VALUES (?, ?, ?, ?, ?)
-            """, (
-                order_id,
-                it["card_name"],
-                it["price"],
-                it["post_mid"],
-                it["qty"]
-            ))
+                """,
+                (
+                    order_id,
+                    it["card_name"],
+                    it["price"],
+                    it["post_mid"],
+                    it["qty"],
+                ),
+            )
 
     upsert_checkout(user_id, stage="awaiting_payment", invoice_no=invoice_no)
 
-    # ===== INVOICE PDF =====
     invoice_items = [{"name": it["card_name"], "qty": it["qty"], "price": it["price"]} for it in items]
 
     buyer_address = ""
@@ -476,17 +548,18 @@ async def checkout_continue(cb: CallbackQuery):
         paynow_name=PAYNOW_NAME,
         buyer_username=cb.from_user.username or "",
         buyer_address=buyer_address,
-        items=invoice_items
+        items=invoice_items,
     )
 
     await cb.message.answer_document(
         BufferedInputFile(pdf, filename=f"{invoice_no}.pdf"),
         caption=(
-            f"📄 Invoice Generated\n\n"
-            f"Invoice: {invoice_no}\n"
-            f"Total: ${total:.2f} SGD\n\n"
-            "Please send payment proof screenshot."
-        )
+            "🧾🌑 <b>Invoice Materialized</b>\n\n"
+            f"Invoice: <code>{invoice_no}</code>\n"
+            f"Total: <b>${total:.2f} SGD</b>\n\n"
+            "📸 Please send your payment proof screenshot here in DM."
+        ),
+        parse_mode="HTML",
     )
 
     # Merchant copy to admin
@@ -499,22 +572,20 @@ async def checkout_continue(cb: CallbackQuery):
                 f"Invoice: <code>{invoice_no}</code>\n"
                 f"Buyer: @{cb.from_user.username or 'NoUsername'}\n"
                 f"User ID: <code>{user_id}</code>\n"
-                f"Total: ${total:.2f} SGD\n"
-                f"Delivery Method: {method.upper()}\n\n"
+                f"Total: <b>${total:.2f} SGD</b>\n"
+                f"Delivery Method: <b>{method.upper()}</b>\n\n"
                 "📌 Address: Pending buyer confirmation"
             ),
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
     except Exception as e:
         print("Failed to send merchant invoice copy:", e)
 
     await cb.answer()
 
-
-# ==========================================================
-# PAYMENT PROOF + ADMIN APPROVAL
-# ==========================================================
-
+# =========================
+# PAYMENT PROOF + ADMIN REVIEW
+# =========================
 @router.message(F.chat.type == "private", (F.photo | F.document))
 async def payment_proof_received(message: Message):
     ck = get_checkout(message.from_user.id) or {}
@@ -525,40 +596,29 @@ async def payment_proof_received(message: Message):
     if not invoice_no:
         return
 
-    # Update order status
     with get_db() as conn:
-        conn.execute("""
+        conn.execute(
+            """
             UPDATE orders
             SET status = 'payment_received'
             WHERE invoice_no = ?
               AND user_id = ?
-        """, (invoice_no, message.from_user.id))
+            """,
+            (invoice_no, message.from_user.id),
+        )
 
     upsert_checkout(message.from_user.id, stage="payment_submitted")
 
     await message.answer(
-        "✅ Payment proof received!\n\n"
-        "⏳ Please wait for admin approval.\n\n"
+        "✅🕯️ Payment proof received!\n\n"
+        "⏳ Please wait for admin approval.\n"
         f"Invoice: {invoice_no}"
     )
 
     try:
-        # Build approve / reject keyboard
-        from callbacks import PaymentReviewCB
-        from aiogram.utils.keyboard import InlineKeyboardBuilder
-
         kb = InlineKeyboardBuilder()
-
-        kb.button(
-            text="✅ Approve",
-            callback_data=PaymentReviewCB(action="approve", invoice=invoice_no).pack()
-        )
-
-        kb.button(
-            text="❌ Reject",
-            callback_data=PaymentReviewCB(action="reject", invoice=invoice_no).pack()
-        )
-
+        kb.button(text="✅ Approve", callback_data=PaymentReviewCB(action="approve", invoice=invoice_no).pack())
+        kb.button(text="❌ Reject", callback_data=PaymentReviewCB(action="reject", invoice=invoice_no).pack())
         kb.adjust(2)
 
         admin_caption = (
@@ -569,33 +629,29 @@ async def payment_proof_received(message: Message):
             "Please review this payment:"
         )
 
-        # Send ONE combined message to admin
         if message.photo:
             await message.bot.send_photo(
                 chat_id=ADMIN_ID,
                 photo=message.photo[-1].file_id,
                 caption=admin_caption,
                 parse_mode="HTML",
-                reply_markup=kb.as_markup()
+                reply_markup=kb.as_markup(),
             )
-
         elif message.document:
             await message.bot.send_document(
                 chat_id=ADMIN_ID,
                 document=message.document.file_id,
                 caption=admin_caption,
                 parse_mode="HTML",
-                reply_markup=kb.as_markup()
+                reply_markup=kb.as_markup(),
             )
-
     except Exception as e:
         print("Error sending payment proof to admin:", e)
 
-
+# (Optional legacy command approve - keeps your workflow)
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("approve"))
 async def admin_approve(message: Message):
     parts = (message.text or "").strip().split(maxsplit=1)
-
     if len(parts) < 2:
         await message.answer("❌ Usage: /approve <INVOICE_NO>")
         return
@@ -604,11 +660,7 @@ async def admin_approve(message: Message):
 
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT user_id, delivery_method, status
-            FROM orders
-            WHERE invoice_no = ?
-        """, (invoice_no,))
+        cur.execute("SELECT user_id, delivery_method FROM orders WHERE invoice_no = ?", (invoice_no,))
         row = cur.fetchone()
 
         if not row:
@@ -618,83 +670,52 @@ async def admin_approve(message: Message):
         user_id = int(row["user_id"])
         delivery_method = row["delivery_method"]
 
-        conn.execute("""
-            UPDATE orders
-            SET status = 'verifying'
-            WHERE invoice_no = ?
-        """, (invoice_no,))
+        conn.execute("UPDATE orders SET status = 'verifying' WHERE invoice_no = ?", (invoice_no,))
 
     if delivery_method == "tracked":
         upsert_checkout(user_id, stage="awaiting_address", invoice_no=invoice_no)
-
         await message.bot.send_message(
             chat_id=user_id,
             text=(
-                "✅ Payment verified!\n\n"
-                "📮 *Next Step: Shipping Details*\n\n"
-                "Copy the example below, edit the details, and send it back "
-                "in *ONE message*.\n\n"
-                "————— DELETE ABOVE —————\n"
-                "Name : John Tan\n"
-                "Street Name : 123 ABC Road\n"
-                "Unit Number : #10-01\n"
-                "Postal Code : 123456\n"
-                "Phone Number : 91234567\n"
-                "————— DELETE BELOW —————\n\n"
-                "⚠️ Keep the field names the same. Only change the details.\n\n"
-                f"Invoice: {invoice_no}"
+                "✅ <b>Payment verified!</b>\n\n"
+                "📮 <b>Next Step: Shipping Details</b>\n\n"
+                "Copy the template below, fill it in, and send it back in <b>ONE message</b>:\n\n"
+                f"<code>{address_template()}</code>\n\n"
+                f"Invoice: <code>{invoice_no}</code>\n"
+                "⚠️ Keep the field names the same."
             ),
-            parse_mode="HTML"
+            parse_mode="HTML",
         )
-
         await message.answer(f"✅ Approved {invoice_no} (awaiting address)")
         return
 
     # self collection
     with get_db() as conn:
-        conn.execute("""
-            UPDATE orders
-            SET status = 'ready_to_ship'
-            WHERE invoice_no = ?
-        """, (invoice_no,))
+        conn.execute("UPDATE orders SET status = 'ready_to_ship' WHERE invoice_no = ?", (invoice_no,))
 
     upsert_checkout(user_id, stage="done", invoice_no=invoice_no)
 
     await message.bot.send_message(
         chat_id=user_id,
         text=(
-            "✅ <b>Payment Verified – Self Collection Confirmed!</b>\n\n"
+            "✅ <b>Payment Verified — Self Collection Confirmed!</b>\n\n"
             "📍 <b>Collection Location:</b>\n"
             f"{SELF_PICKUP_TEXT}\n\n"
-            "⏰ <b>Collection Time:</b>\n"
-            "• Please arrange a time with the seller via Telegram DM\n"
-            "• Self-collection is strictly by appointment only\n\n"
-            "📦 <b>What to Bring:</b>\n"
-            "• Show your invoice upon arrival\n\n"
-            "⚠️ <b>Important Notes:</b>\n"
-            "• Orders must be collected within 7 days\n"
-            "• Uncollected orders after 7 days may be cancelled\n"
-            "• Please inspect items on the spot during collection\n\n"
-            f"🧾 <b>Invoice:</b> {invoice_no}\n\n"
-            "Thank you! Please message the seller to arrange pickup 😊"
+            "⏰ <b>Collection:</b> Arrange a time with the seller via Telegram DM.\n\n"
+            f"🧾 <b>Invoice:</b> <code>{invoice_no}</code>\n\n"
+            "Thank you! 🕯️"
         ),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
-
     await message.answer(f"✅ Approved {invoice_no} (self collection)")
 
 @router.callback_query(PaymentReviewCB.filter(F.action == "approve"))
 async def approve_via_button(cb: CallbackQuery, callback_data: PaymentReviewCB):
-
     invoice_no = callback_data.invoice
 
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT user_id, delivery_method, status
-            FROM orders
-            WHERE invoice_no = ?
-        """, (invoice_no,))
+        cur.execute("SELECT user_id, delivery_method FROM orders WHERE invoice_no = ?", (invoice_no,))
         row = cur.fetchone()
 
         if not row:
@@ -704,13 +725,7 @@ async def approve_via_button(cb: CallbackQuery, callback_data: PaymentReviewCB):
         user_id = int(row["user_id"])
         delivery_method = row["delivery_method"]
 
-        conn.execute("""
-            UPDATE orders
-            SET status = 'verifying'
-            WHERE invoice_no = ?
-        """, (invoice_no,))
-
-    # Now replicate the same logic your admin_approve command does
+        conn.execute("UPDATE orders SET status = 'verifying' WHERE invoice_no = ?", (invoice_no,))
 
     if delivery_method == "tracked":
         upsert_checkout(user_id, stage="awaiting_address", invoice_no=invoice_no)
@@ -718,74 +733,56 @@ async def approve_via_button(cb: CallbackQuery, callback_data: PaymentReviewCB):
         await cb.message.bot.send_message(
             chat_id=user_id,
             text=(
-                "✅ Payment verified!\n\n"
-                "📮 Next Step: Shipping Details\n"
-                "Please copy and fill this template exactly and send it back:\n"
-                "----------------------------------------------\n"
-                "Name :\n"
-                "Street Name :\n"
-                "Unit Number :\n"
-                "Postal Code :\n"
-                "Phone Number :\n"
-                "----------------------------------------------\n"
-                f"Invoice: {invoice_no}"
-            )
+                "✅ <b>Payment verified!</b>\n\n"
+                "📮 <b>Next Step: Shipping Details</b>\n\n"
+                "Copy the template below, fill it in, and send it back in <b>ONE message</b>:\n\n"
+                f"<code>{address_template()}</code>\n\n"
+                f"Invoice: <code>{invoice_no}</code>\n"
+                "⚠️ Keep the field names the same."
+            ),
+            parse_mode="HTML",
         )
 
         await cb.message.answer(f"✅ Approved {invoice_no} (awaiting address)")
         await cb.answer("Approved")
         return
 
-    # Self collection flow
+    # Self collection
     with get_db() as conn:
-        conn.execute("""
-            UPDATE orders
-            SET status = 'ready_to_ship'
-            WHERE invoice_no = ?
-        """, (invoice_no,))
+        conn.execute("UPDATE orders SET status = 'ready_to_ship' WHERE invoice_no = ?", (invoice_no,))
 
     upsert_checkout(user_id, stage="done", invoice_no=invoice_no)
 
     await cb.message.bot.send_message(
         chat_id=user_id,
         text=(
-            "✅ <b>Payment Verified – Self Collection Confirmed!</b>\n\n"
+            "✅ <b>Payment Verified — Self Collection Confirmed!</b>\n\n"
             "📍 <b>Collection Location:</b>\n"
             f"{SELF_PICKUP_TEXT}\n\n"
-            "Please message the seller to arrange pickup 😊\n\n"
-            f"🧾 <b>Invoice:</b> {invoice_no}"
+            "Arrange a time with the seller via Telegram DM 🕯️\n\n"
+            f"🧾 <b>Invoice:</b> <code>{invoice_no}</code>"
         ),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
 
     await cb.message.answer(f"✅ Approved {invoice_no}")
     await cb.answer("Approved")
 
-
 @router.callback_query(PaymentReviewCB.filter(F.action == "reject"))
 async def reject_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
-
     invoice_no = callback_data.invoice
 
     with get_db() as conn:
         cur = conn.cursor()
-
-        cur.execute("""
-            SELECT user_id FROM orders WHERE invoice_no = ?
-        """, (invoice_no,))
+        cur.execute("SELECT user_id FROM orders WHERE invoice_no = ?", (invoice_no,))
         row = cur.fetchone()
 
         if not row:
             await cb.answer("Invoice not found", show_alert=True)
             return
 
-        user_id = row["user_id"]
-
-        conn.execute("""
-            UPDATE orders
-            SET status = 'rejected'
-            WHERE invoice_no = ?
-        """, (invoice_no,))
+        user_id = int(row["user_id"])
+        conn.execute("UPDATE orders SET status = 'rejected' WHERE invoice_no = ?", (invoice_no,))
 
     upsert_checkout(user_id, stage="awaiting_payment")
 
@@ -793,31 +790,23 @@ async def reject_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
         chat_id=user_id,
         text=(
             "❌ <b>Payment Proof Rejected</b>\n\n"
-            f"Invoice: {invoice_no}\n\n"
+            f"Invoice: <code>{invoice_no}</code>\n\n"
             "Please re-submit a clearer payment screenshot."
         ),
-        parse_mode="HTML"
+        parse_mode="HTML",
     )
 
     await cb.message.answer(f"❌ Rejected {invoice_no}")
     await cb.answer("Rejected")
 
-
-# ==========================================================
-# ADDRESS CAPTURE (handled by central dispatcher)
-# ==========================================================
-
-ADDRESS_RE = re.compile(
-    r"Name\s*:\s*(?P<name>.+)\n"
-    r"Street Name\s*:\s*(?P<street>.+)\n"
-    r"Unit Number\s*:\s*(?P<unit>.+)\n"
-    r"Postal Code\s*:\s*(?P<postal>.+)\n"
-    r"Phone Number\s*:\s*(?P<phone>.+)",
-    re.IGNORECASE
-)
-
-
+# =========================
+# ADDRESS CAPTURE
+# =========================
 async def process_address_text(message: Message) -> bool:
+    """
+    This is called by your central dispatcher (as you noted).
+    Returns True if it handled the message (so dispatcher can stop).
+    """
     ck = get_checkout(message.from_user.id) or {}
     if ck.get("stage") != "awaiting_address":
         return False
@@ -826,34 +815,27 @@ async def process_address_text(message: Message) -> bool:
     if not invoice_no:
         return True
 
-    m = ADDRESS_RE.search((message.text or "").strip())
-    if not m:
+    data = parse_address_block(message.text or "")
+    if not data:
         await message.answer(
-            "❌ Format not detected. Please copy the template exactly:\n\n"
-            "Name :\n"
-            "Street Name :\n"
-            "Unit Number :\n"
-            "Postal Code :\n"
-            "Phone Number :\n\n"
-            f"Invoice: {invoice_no}"
+            "❌ I couldn’t detect the format.\n\n"
+            "Please copy the template exactly and send it back in ONE message:\n\n"
+            f"<code>{address_template()}</code>\n\n"
+            f"Invoice: <code>{invoice_no}</code>",
+            parse_mode="HTML",
         )
         return True
 
-    data = {
-        "name": m.group("name").strip(),
-        "street": m.group("street").strip(),
-        "unit": m.group("unit").strip(),
-        "postal": m.group("postal").strip(),
-        "phone": m.group("phone").strip(),
-    }
-
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id FROM orders
             WHERE invoice_no = ?
               AND user_id = ?
-        """, (invoice_no, message.from_user.id))
+            """,
+            (invoice_no, message.from_user.id),
+        )
         order = cur.fetchone()
 
         if not order:
@@ -862,7 +844,8 @@ async def process_address_text(message: Message) -> bool:
 
         order_id = int(order["id"])
 
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO shipping_address
             (order_id, name, street_name, unit_number, postal_code, phone_number, confirmed)
             VALUES (?, ?, ?, ?, ?, ?, 0)
@@ -873,29 +856,31 @@ async def process_address_text(message: Message) -> bool:
                 postal_code=excluded.postal_code,
                 phone_number=excluded.phone_number,
                 confirmed=0
-        """, (
-            order_id,
-            data["name"],
-            data["street"],
-            data["unit"],
-            data["postal"],
-            data["phone"]
-        ))
+            """,
+            (
+                order_id,
+                data["name"],
+                data["street"],
+                data["unit"],
+                data["postal"],
+                data["phone"],
+            ),
+        )
 
     upsert_checkout(message.from_user.id, stage="confirm_address")
 
     await message.answer(
-        "📮 Please confirm your delivery details:\n\n"
+        "📮 <b>Please confirm your delivery details</b> 🕯️\n\n"
         f"Name : {data['name']}\n"
         f"Street Name : {data['street']}\n"
         f"Unit Number : {data['unit']}\n"
         f"Postal Code : {data['postal']}\n"
         f"Phone Number : {data['phone']}\n\n"
-        "Are you sure these are the confirmed delivery details?",
-        reply_markup=kb_confirm_address()
+        "Are these correct?",
+        parse_mode="HTML",
+        reply_markup=kb_confirm_address(),
     )
     return True
-
 
 @router.callback_query(F.data.startswith("checkout:address:"))
 async def addr_confirm(cb: CallbackQuery):
@@ -915,17 +900,25 @@ async def addr_confirm(cb: CallbackQuery):
 
     if action == "reenter":
         upsert_checkout(user_id, stage="awaiting_address")
-        await cb.message.answer("✍️ Please re-enter your address using the template.")
+        await cb.message.answer(
+            "✍️ Please re-enter your address using the template:\n\n"
+            f"<code>{address_template()}</code>\n\n"
+            f"Invoice: <code>{invoice_no}</code>",
+            parse_mode="HTML",
+        )
         await cb.answer()
         return
 
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id FROM orders
             WHERE invoice_no = ?
               AND user_id = ?
-        """, (invoice_no, user_id))
+            """,
+            (invoice_no, user_id),
+        )
         order = cur.fetchone()
 
         if not order:
@@ -941,28 +934,16 @@ async def addr_confirm(cb: CallbackQuery):
         cur.execute("SELECT * FROM shipping_address WHERE order_id = ?", (order_id,))
         a = cur.fetchone()
 
-    # Notify Admin that order is ready to ship
-    from callbacks import ShippingActionCB
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-
+    # Notify Admin: order ready to ship
     kb = InlineKeyboardBuilder()
-
-    kb.button(
-        text="🚚 Start Shipping",
-        callback_data=ShippingActionCB(action="start", invoice=invoice_no).pack()
-    )
-
-    kb.button(
-        text="❌ Cancel Order",
-        callback_data=ShippingActionCB(action="cancel", invoice=invoice_no).pack()
-    )
-
+    kb.button(text="🚚 Start Shipping", callback_data=ShippingActionCB(action="start", invoice=invoice_no).pack())
+    kb.button(text="❌ Cancel Order", callback_data=ShippingActionCB(action="cancel", invoice=invoice_no).pack())
     kb.adjust(2)
 
     await cb.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
-            f"📦 <b>ORDER READY TO SHIP</b>\n\n"
+            "📦 <b>ORDER READY TO SHIP</b>\n\n"
             f"Invoice: <code>{invoice_no}</code>\n"
             f"Buyer: @{cb.from_user.username or 'NoUsername'}\n"
             f"User ID: <code>{user_id}</code>\n\n"
@@ -970,25 +951,23 @@ async def addr_confirm(cb: CallbackQuery):
             "Choose an action:"
         ),
         parse_mode="HTML",
-        reply_markup=kb.as_markup()
+        reply_markup=kb.as_markup(),
     )
-
-
 
     upsert_checkout(user_id, stage="done")
 
     await cb.message.answer(
-        "✅ Shipping Address Confirmed!\n\n"
+        "✅ <b>Shipping Address Confirmed!</b>\n\n"
         f"Name : {a['name']}\n"
         f"Street Name : {a['street_name']}\n"
         f"Unit Number : {a['unit_number']}\n"
         f"Postal Code : {a['postal_code']}\n"
         f"Phone Number : {a['phone_number']}\n\n"
-        "📋 Order Summary:\n"
+        "📋 <b>Order Status</b>\n"
         "• Payment proof: ✅ Received\n"
         "• Shipping address: ✅ Confirmed\n"
-        "• Payment verification: 📦 Ready to Ship\n\n"
-        "You will receive a tracking number once shipped.\n\n"
-        f"Invoice: {invoice_no}"
+        "• Next: 📦 Seller will ship and send tracking\n\n"
+        f"Invoice: <code>{invoice_no}</code>",
+        parse_mode="HTML",
     )
     await cb.answer()
