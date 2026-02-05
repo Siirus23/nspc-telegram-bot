@@ -58,8 +58,8 @@ def build_admin_panel():
 
     kb.button(text="🕒 Pending Payment Approvals", callback_data="admin:pendingpay")
     kb.button(text="🧾 Packing List", callback_data="admin:packlist")
-    kb.button(text="📦 Orders Ready To Ship", callback_data="admin:toship")
-    kb.button(text="🚚 View Shipped Orders", callback_data="admin:shipped")
+    kb.button(text="📦 Orders Ready To Pack", callback_data="admin:toship")
+    kb.button(text="🚚 Orders Shipped", callback_data="admin:shipped")
     kb.button(text="📮 Manual Tracking Entry", callback_data="admin:manual")
     kb.button(text="❌ Cancel Claims", callback_data="admin:cancelclaims")
     kb.button(text="❌ Cancel Shipping Session", callback_data="admin:cancelship")
@@ -617,10 +617,10 @@ async def list_orders_ready(message: Message):
         rows = cur.fetchall()
 
     if not rows:
-        await message.answer("📦 No orders currently waiting to be shipped.")
+        await message.answer("📦 No orders currently ready to pack.")
         return
 
-    await message.answer("📦 <b>Orders Ready To Ship:</b>", parse_mode="HTML")
+    await message.answer("📦 <b>Orders Ready To Pack:</b>", parse_mode="HTML")
 
     for r in rows:
         inv = r["invoice_no"]
@@ -645,11 +645,11 @@ async def list_orders_ready(message: Message):
             f"<b>Invoice:</b> <code>{inv}</code>\n"
             f"<b>Buyer:</b> @{user}\n"
             f"<b>Total:</b> ${total:.2f}\n"
-            f"<b>Status:</b> READY TO SHIP"
+            f"<b>Status:</b> READY TO PACK"
         )
 
         await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
-
+        
 
 # ===========================
 # PACKING LIST
@@ -661,7 +661,7 @@ async def generate_packlist(message: Message):
     with get_db() as conn:
         cur = conn.cursor()
 
-        # Get all orders ready to ship
+        # Get all orders ready to pack (stored as ready_to_ship in DB)
         cur.execute("""
             SELECT id, invoice_no, username
             FROM orders
@@ -671,10 +671,10 @@ async def generate_packlist(message: Message):
         orders = cur.fetchall()
 
         if not orders:
-            await message.answer("📦 No orders currently ready to ship.")
+            await message.answer("📦 No orders currently ready to pack.")
             return
 
-        text = "📦 <b>Packing Checklist</b>\n\n"
+        text = "📦 <b>Orders Ready To Pack</b>\n\n"
 
         for order in orders:
             order_id = order["id"]
@@ -683,7 +683,6 @@ async def generate_packlist(message: Message):
 
             text += f"<b>{invoice_no}</b> – @{username}\n"
 
-            # Get items linked to this order using order_id
             cur.execute("""
                 SELECT card_name, qty
                 FROM order_items
@@ -698,7 +697,6 @@ async def generate_packlist(message: Message):
             text += "\n"
 
     await message.answer(text, parse_mode="HTML")
-
 
 # ===========================
 # START SHIPPING SESSION
