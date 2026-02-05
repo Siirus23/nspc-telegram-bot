@@ -1,3 +1,4 @@
+# shipping_admin.py
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
@@ -7,8 +8,6 @@ from callbacks import ShippingActionCB
 from ocr_utils import extract_text_from_photo, extract_tracking_number
 
 import re
-import csv
-import io
 
 from db import (
     get_db,
@@ -22,6 +21,7 @@ from config import ADMIN_ID, CHANNEL_ID
 router = Router()
 
 TRACKING_REGEX = re.compile(r"[A-Za-z]{2}\d{9}SG", re.IGNORECASE)
+INVOICE_REGEX = re.compile(r"^INV-\d+$", re.IGNORECASE)
 
 
 # ===========================
@@ -32,20 +32,26 @@ def admin_help_text():
     return """
 🛠 <b>Admin Panel Guide</b>
 
-📦 Orders Ready To Ship  
-- Shows all paid & address-confirmed orders  
+🕒 Pending Payment Approvals
+- Shows all payments awaiting approval
 
-🧾 Packing List  
-- Checklist of items to pack  
+📦 Orders Ready To Pack
+- Shows all paid & address-confirmed orders (READY TO SHIP)
 
-🚚 View Shipped Orders  
-- Recently shipped orders  
+🧾 Packing List
+- Checklist of items to pack for READY TO SHIP orders
 
-📮 Manual Tracking Entry  
-- Enter tracking manually if needed  
+🚚 Orders Shipped
+- Recently shipped orders list
 
-❌ Cancel Shipping Session  
-- Reset current workflow  
+⌨️ Type Tracking (OCR Fail)
+- Manual fallback: type invoice first, then tracking
+
+❌ Cancel Claims
+- Admin wizard to remove buyer claims + restore stock
+
+❌ Cancel Shipping Session
+- Reset current admin workflow session
 """
 
 
@@ -60,11 +66,10 @@ def build_admin_panel():
     kb.button(text="🧾 Packing List", callback_data="admin:packlist")
     kb.button(text="📦 Orders Ready To Pack", callback_data="admin:toship")
     kb.button(text="🚚 Orders Shipped", callback_data="admin:shipped")
-    kb.button(text="📮 Manual Tracking Entry", callback_data="admin:manual")
+    kb.button(text="⌨️ Type Tracking (OCR Fail)", callback_data="admin:manual")
     kb.button(text="❌ Cancel Claims", callback_data="admin:cancelclaims")
     kb.button(text="❌ Cancel Shipping Session", callback_data="admin:cancelship")
     kb.button(text="ℹ️ Admin Help", callback_data="admin:help")
-    
 
     kb.adjust(1)
     return kb.as_markup()
@@ -84,7 +89,6 @@ async def show_admin_panel(message: Message):
 # ===========================
 
 async def list_shipped_orders(message: Message):
-
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -101,7 +105,6 @@ async def list_shipped_orders(message: Message):
         return
 
     text = ["🚚 <b>Recently Shipped Orders</b>\n"]
-
     for r in rows:
         text.append(
             f"• <code>{r['invoice_no']}</code> – "
@@ -112,15 +115,12 @@ async def list_shipped_orders(message: Message):
     await message.answer("\n".join(text), parse_mode="HTML")
 
 
-
-
 # ===========================
 # ADMIN PANEL CALLBACKS
 # ===========================
 
 @router.callback_query(F.data.startswith("admin:"))
 async def admin_panel_actions(cb: CallbackQuery):
-
     if cb.from_user.id != ADMIN_ID:
         await cb.answer("Unauthorized", show_alert=True)
         return
@@ -137,10 +137,16 @@ async def admin_panel_actions(cb: CallbackQuery):
         await list_shipped_orders(cb.message)
 
     elif action == "manual":
-        set_admin_session(ADMIN_ID, "awaiting_tracking", None)
+        # Manual fallback flow: invoice first, then tracking
+        set_admin_session(ADMIN_ID, "awaiting_tracking_invoice", None)
         await cb.bot.send_message(
             chat_id=ADMIN_ID,
-            text="📮 Manual tracking mode activated. Send tracking number now.",
+            text=(
+                "⌨️ <b>Type Tracking (OCR Fail)</b>\n\n"
+                "Send the invoice number first.\n"
+                "Example: <code>INV-000016</code>"
+            ),
+            parse_mode="HTML",
         )
 
     elif action == "cancelclaims":
@@ -159,10 +165,12 @@ async def admin_panel_actions(cb: CallbackQuery):
             text=admin_help_text(),
             parse_mode="HTML"
         )
+
     elif action == "pendingpay":
         await list_pending_payments(cb.message)
 
     await cb.answer()
+
 
 # ===========================
 # CANCEL CLAIMS (ADMIN WIZARD)
@@ -220,6 +228,7 @@ def _fetch_nth_claim_user(n: int):
             ORDER BY earliest ASC
         """, (CHANNEL_ID,))
         rows = cur.fetchall()
+
     if n < 1 or n > len(rows):
         return None
     return dict(rows[n - 1])
@@ -253,7 +262,7 @@ async def _send_user_claimed_cards(message: Message, user_id: int, username: str
         set_admin_session(ADMIN_ID, "cc_select_user", None)
         return
 
-    # store selected user_id in invoice_no column (text) to persist across restart
+    # store selected user_id in invoice_no column (text)
     set_admin_session(ADMIN_ID, "cc_select_items", str(user_id))
 
     uname = f"@{username}" if username else "(no username)"
@@ -296,15 +305,14 @@ def _fetch_user_claim_groups(user_id: int):
 
 
 async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: int, reason: str = "admin_cancel"):
-    """Cancel ALL active claims for a user on a specific post (card), restore stock, update caption.
-       Also adjusts any non-shipped order for that user (A + C integration).
     """
-    # Step 1: cancel claims + restore inventory atomically
+    Cancel ALL active claims for a user on a specific post (card), restore stock, update caption.
+    Also adjusts any non-shipped order for that user.
+    """
     with get_db() as conn:
         cur = conn.cursor()
         conn.execute("BEGIN IMMEDIATE")
 
-        # how many active claims on this post for this user
         cur.execute("""
             SELECT COUNT(*) AS c
             FROM claims
@@ -319,7 +327,6 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
             conn.rollback()
             return None
 
-        # restore inventory and get card info
         cur.execute("""
             SELECT card_name, price, remaining_qty
             FROM card_listing
@@ -327,6 +334,7 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
               AND channel_message_id = ?
         """, (CHANNEL_ID, post_mid))
         card = cur.fetchone()
+
         if not card:
             conn.rollback()
             return None
@@ -351,7 +359,6 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
               AND channel_message_id = ?
         """, (qty, CHANNEL_ID, post_mid))
 
-        # admin log
         cur.execute("""
             INSERT INTO admin_logs (action_type, admin_id, target_user_id, card_name, channel_message_id, quantity, reason)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -361,7 +368,6 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
 
     new_remaining = remaining + qty
 
-    # Step 2: update caption on channel post
     caption = (
         f"{card_name}\nPrice: {price_str}\n❌ SOLD OUT"
         if new_remaining <= 0 else
@@ -372,15 +378,13 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
     except Exception:
         pass
 
-    # Step 3: adjust any non-shipped order for that user (A + C integration)
     order_cancelled = False
     updated_invoice = None
 
     with get_db() as conn:
         cur = conn.cursor()
-        # pick latest active order
         cur.execute("""
-            SELECT id, invoice_no, cards_total, delivery_fee, total, status
+            SELECT id, invoice_no, delivery_fee, status
             FROM orders
             WHERE user_id = ?
               AND status IN ('pending_payment', 'payment_received', 'verifying', 'ready_to_ship')
@@ -393,7 +397,6 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
             order_id = ord_row["id"]
             updated_invoice = ord_row["invoice_no"]
 
-            # reduce/remove matching order item
             cur.execute("""
                 SELECT id, qty, price
                 FROM order_items
@@ -405,9 +408,7 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
             if oi:
                 oi_id = oi["id"]
                 oi_qty = int(oi["qty"])
-                oi_price = float(oi["price"])
 
-                # we remove min(qty claimed, item qty). Usually identical.
                 remove_qty = min(qty, oi_qty)
                 new_qty = oi_qty - remove_qty
 
@@ -416,18 +417,27 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
                 else:
                     cur.execute("UPDATE order_items SET qty = ? WHERE id = ?", (new_qty, oi_id))
 
-                # recompute totals from remaining order_items
-                cur.execute("SELECT COALESCE(SUM(price * qty), 0) AS cards_total FROM order_items WHERE order_id = ?", (order_id,))
+                cur.execute("""
+                    SELECT COALESCE(SUM(price * qty), 0) AS cards_total
+                    FROM order_items
+                    WHERE order_id = ?
+                """, (order_id,))
                 cards_total = float(cur.fetchone()["cards_total"] or 0)
+
                 delivery_fee = float(ord_row["delivery_fee"] or 0)
                 total = cards_total + delivery_fee
 
                 if cards_total <= 0:
-                    # C integration: auto-cancel order if empty
-                    cur.execute("UPDATE orders SET status = 'cancelled', cards_total = 0, total = 0 WHERE id = ?", (order_id,))
+                    cur.execute(
+                        "UPDATE orders SET status = 'cancelled', cards_total = 0, total = 0 WHERE id = ?",
+                        (order_id,)
+                    )
                     order_cancelled = True
                 else:
-                    cur.execute("UPDATE orders SET cards_total = ?, total = ? WHERE id = ?", (cards_total, total, order_id))
+                    cur.execute(
+                        "UPDATE orders SET cards_total = ?, total = ? WHERE id = ?",
+                        (cards_total, total, order_id)
+                    )
 
             conn.commit()
 
@@ -442,7 +452,6 @@ async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: in
 
 
 def _parse_selection_numbers(text: str):
-    """Accept '1', '1 3 4', '1,3,4'. Return sorted unique ints."""
     parts = text.replace(",", " ").split()
     nums = []
     for p in parts:
@@ -452,7 +461,6 @@ def _parse_selection_numbers(text: str):
 
 
 async def process_cancel_claims_text(message: Message) -> bool:
-    """Returns True if this message was handled by cancel-claims wizard."""
     sess = get_admin_session(ADMIN_ID)
     if not sess:
         return False
@@ -460,7 +468,6 @@ async def process_cancel_claims_text(message: Message) -> bool:
     stype = sess.get("session_type")
     text = (message.text or "").strip()
 
-    # Step 1: select user
     if stype == "cc_select_user":
         if text == "0":
             clear_admin_session(ADMIN_ID)
@@ -480,10 +487,8 @@ async def process_cancel_claims_text(message: Message) -> bool:
         await _send_user_claimed_cards(message, user_id=int(row["user_id"]), username=row.get("username") or None)
         return True
 
-    # Step 2: select item(s)
     if stype == "cc_select_items":
         if text == "0":
-            # go back to user list
             await list_cancel_claim_users(message)
             return True
 
@@ -503,8 +508,7 @@ async def process_cancel_claims_text(message: Message) -> bool:
             await message.answer("❌ Reply with card number(s), e.g. 2 or 1 3 4.")
             return True
 
-        # validate selection
-        chosen = [groups[i-1] for i in nums if 1 <= i <= len(groups)]
+        chosen = [groups[i - 1] for i in nums if 1 <= i <= len(groups)]
         if not chosen:
             await message.answer("❌ Invalid selection.")
             return True
@@ -527,11 +531,7 @@ async def process_cancel_claims_text(message: Message) -> bool:
             await _send_user_claimed_cards(message, user_id=user_id, username=None)
             return True
 
-        summary = [
-            "✅ <b>Claims removed</b>",
-            *removed_lines,
-        ]
-
+        summary = ["✅ <b>Claims removed</b>", *removed_lines]
         if invoice_touched:
             summary.append(f"\n🧾 <b>Invoice updated:</b> <code>{invoice_touched}</code>")
         if order_cancelled_any:
@@ -539,7 +539,6 @@ async def process_cancel_claims_text(message: Message) -> bool:
 
         await message.answer("\n".join(summary), parse_mode="HTML")
 
-        # stay in step 2 (show updated list)
         await _send_user_claimed_cards(message, user_id=user_id, username=None)
         return True
 
@@ -551,7 +550,6 @@ async def process_cancel_claims_text(message: Message) -> bool:
 # ===========================
 
 async def list_pending_payments(message: Message):
-
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -573,20 +571,11 @@ async def list_pending_payments(message: Message):
     for r in rows:
         inv = r["invoice_no"]
         user = r["username"] or "NoUsername"
-        total = r["total"]
+        total = float(r["total"] or 0)
 
         kb = InlineKeyboardBuilder()
-
-        kb.button(
-            text="✅ Approve",
-            callback_data=PaymentReviewCB(action="approve", invoice=inv).pack()
-        )
-
-        kb.button(
-            text="❌ Reject",
-            callback_data=PaymentReviewCB(action="reject", invoice=inv).pack()
-        )
-
+        kb.button(text="✅ Approve", callback_data=PaymentReviewCB(action="approve", invoice=inv).pack())
+        kb.button(text="❌ Reject", callback_data=PaymentReviewCB(action="reject", invoice=inv).pack())
         kb.adjust(2)
 
         text = (
@@ -605,7 +594,6 @@ async def list_pending_payments(message: Message):
 
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("toship"))
 async def list_orders_ready(message: Message):
-
     with get_db() as conn:
         cur = conn.cursor()
         cur.execute("""
@@ -625,20 +613,11 @@ async def list_orders_ready(message: Message):
     for r in rows:
         inv = r["invoice_no"]
         user = r["username"] or "NoUsername"
-        total = r["total"]
+        total = float(r["total"] or 0)
 
         kb = InlineKeyboardBuilder()
-
-        kb.button(
-            text="🚚 Start Shipping",
-            callback_data=ShippingActionCB(action="start", invoice=inv).pack()
-        )
-
-        kb.button(
-            text="❌ Cancel Order",
-            callback_data=ShippingActionCB(action="cancel", invoice=inv).pack()
-        )
-
+        kb.button(text="🚚 Start Shipping", callback_data=ShippingActionCB(action="start", invoice=inv).pack())
+        kb.button(text="❌ Cancel Order", callback_data=ShippingActionCB(action="cancel", invoice=inv).pack())
         kb.adjust(2)
 
         text = (
@@ -649,7 +628,7 @@ async def list_orders_ready(message: Message):
         )
 
         await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
-        
+
 
 # ===========================
 # PACKING LIST
@@ -657,11 +636,9 @@ async def list_orders_ready(message: Message):
 
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("packlist"))
 async def generate_packlist(message: Message):
-
     with get_db() as conn:
         cur = conn.cursor()
 
-        # Get all orders ready to pack (stored as ready_to_ship in DB)
         cur.execute("""
             SELECT id, invoice_no, username
             FROM orders
@@ -688,7 +665,6 @@ async def generate_packlist(message: Message):
                 FROM order_items
                 WHERE order_id = ?
             """, (order_id,))
-
             items = cur.fetchall()
 
             for item in items:
@@ -698,15 +674,14 @@ async def generate_packlist(message: Message):
 
     await message.answer(text, parse_mode="HTML")
 
+
 # ===========================
 # START SHIPPING SESSION
 # ===========================
 
 @router.callback_query(ShippingActionCB.filter(F.action == "start"))
 async def start_shipping_button(cb: CallbackQuery, callback_data: ShippingActionCB):
-
     invoice_no = callback_data.invoice
-
     set_admin_session(ADMIN_ID, "awaiting_tracking", invoice_no)
 
     await cb.bot.send_message(
@@ -714,7 +689,6 @@ async def start_shipping_button(cb: CallbackQuery, callback_data: ShippingAction
         text=f"📦 Shipping started for <code>{invoice_no}</code>\n\nSend tracking number now.",
         parse_mode="HTML"
     )
-
     await cb.answer()
 
 
@@ -724,7 +698,6 @@ async def start_shipping_button(cb: CallbackQuery, callback_data: ShippingAction
 
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
 async def admin_tracking_photo(message: Message):
-
     sess = get_admin_session(ADMIN_ID)
     if not sess or sess.get("session_type") != "awaiting_tracking":
         await message.answer("⚠️ No active shipping session.")
@@ -732,7 +705,6 @@ async def admin_tracking_photo(message: Message):
 
     text = await extract_text_from_photo(message.bot, message)
 
-    # OCR disabled/unavailable (Render) OR OCR failed to read anything
     if not text:
         await message.answer(
             "⚠️ OCR is disabled/unavailable on this server.\n"
@@ -741,7 +713,6 @@ async def admin_tracking_photo(message: Message):
         return
 
     tracking = extract_tracking_number(text)
-
     if not tracking:
         await message.answer(
             "❌ Could not detect tracking from image.\n"
@@ -753,8 +724,46 @@ async def admin_tracking_photo(message: Message):
     await process_tracking_text(message)
 
 
+async def process_manual_tracking_invoice_text(message: Message) -> bool:
+    sess = get_admin_session(ADMIN_ID)
+    if not sess or sess.get("session_type") != "awaiting_tracking_invoice":
+        return False
+
+    inv = (message.text or "").strip().upper()
+    if not INVOICE_REGEX.match(inv):
+        await message.answer("❌ Invalid invoice format. Example: <code>INV-000016</code>", parse_mode="HTML")
+        return True
+
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT invoice_no, status FROM orders WHERE invoice_no = ?", (inv,))
+        row = cur.fetchone()
+
+    if not row:
+        await message.answer("❌ Invoice not found. Try again.")
+        return True
+
+    if row["status"] != "ready_to_ship":
+        await message.answer(
+            "⚠️ This invoice is not <b>READY TO SHIP</b>.\n"
+            f"Current status: <code>{row['status']}</code>",
+            parse_mode="HTML",
+        )
+        return True
+
+    set_admin_session(ADMIN_ID, "awaiting_tracking", inv)
+    await message.answer(
+        f"✅ Invoice locked: <code>{inv}</code>\n\nNow type tracking (e.g. <code>RR123456789SG</code>).",
+        parse_mode="HTML",
+    )
+    return True
+
+
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.text, ~F.text.startswith("/"))
 async def admin_tracking_catcher(message: Message):
+    handled = await process_manual_tracking_invoice_text(message)
+    if handled:
+        return
 
     handled = await process_tracking_text(message)
     if handled:
@@ -766,14 +775,13 @@ async def admin_tracking_catcher(message: Message):
 
 
 async def process_tracking_text(message: Message) -> bool:
-
     sess = get_admin_session(ADMIN_ID)
     if not sess or sess.get("session_type") != "awaiting_tracking":
         return False
 
     invoice_no = sess.get("invoice_no")
 
-    m = TRACKING_REGEX.search(message.text.upper())
+    m = TRACKING_REGEX.search((message.text or "").upper())
     if not m:
         await message.answer("❌ Invalid tracking format.")
         return True
@@ -789,9 +797,7 @@ async def process_tracking_text(message: Message) -> bool:
             WHERE invoice_no = ?
         """, (tracking, invoice_no))
 
-        cur.execute("""
-            SELECT user_id FROM orders WHERE invoice_no = ?
-        """, (invoice_no,))
+        cur.execute("SELECT user_id FROM orders WHERE invoice_no = ?", (invoice_no,))
         row = cur.fetchone()
 
     clear_admin_session(ADMIN_ID)
@@ -811,6 +817,5 @@ async def process_tracking_text(message: Message) -> bool:
             ),
             parse_mode="HTML"
         )
-
 
     return True
