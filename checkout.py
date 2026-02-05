@@ -182,37 +182,37 @@ def kb_buyer_home(has_claims: bool):
     kb = InlineKeyboardBuilder()
 
     if has_claims:
-        kb.button(text="🦇 Checkout Counter (Delivery)", callback_data="buyer:go_delivery")
-        kb.button(text="🕯️ Browse the Shelves", callback_data="buyer:browse_now")
-        kb.button(text="🎒 My Bag (Buyer Panel)", callback_data="buyer:panel")
-        kb.button(text="🧛 Summon Shopkeeper (Help)", callback_data="buyer:help")
+        kb.button(text="🦇 Go To Checkout 🦇", callback_data="buyer:go_delivery")
+        kb.button(text="🕯️ Browse More Cards 🕯️", callback_data="buyer:browse_now")
+        kb.button(text="🎒 Open My Bag 🎒", callback_data="buyer:panel")
+        kb.button(text="🧛🏽‍♂️ Summon Help 🧛🏽‍♂️", callback_data="buyer:help")
         kb.adjust(1, 2, 1)
     else:
-        kb.button(text="🕯️ Browse the Shelves", callback_data="buyer:browse_now")
+        kb.button(text="🕯️ Browse More Cards 🕯️", callback_data="buyer:browse_now")
         kb.button(text="📜 Trainer Guide (How to Claim)", callback_data="buyer:howto")
-        kb.button(text="🧛 Summon Shopkeeper (Help)", callback_data="buyer:help")
+        kb.button(text="🧛🏽‍♂️ Summon Help 🧛🏽‍♂️", callback_data="buyer:help")
         kb.adjust(1, 2)
 
     return kb.as_markup()
 
 def kb_delivery():
     kb = InlineKeyboardBuilder()
-    kb.button(text="📦 Tracked Mail (Bat Express)", callback_data="checkout:delivery:tracked")
-    kb.button(text="🏠 Self Collection (IRL Trade)", callback_data="checkout:delivery:self")
-    kb.button(text="🧛 Summon Shopkeeper (Help)", callback_data="checkout:delivery:human")
+    kb.button(text="📦 Tracked Mail", callback_data="checkout:delivery:tracked")
+    kb.button(text="🏠 Self Collection", callback_data="checkout:delivery:self")
+    kb.button(text="🧛🏽‍♂️ Summon Help 🧛🏽‍♂️", callback_data="checkout:delivery:human")
     kb.adjust(1)
     return kb.as_markup()
 
 def kb_yes_no_browse():
     kb = InlineKeyboardBuilder()
-    kb.button(text="🕯️ Yes, show shelves", callback_data="checkout:browse:yes")
+    kb.button(text="🕯️ Yes, peek shadows", callback_data="checkout:browse:yes")
     kb.button(text="🧾 No, generate invoice", callback_data="checkout:browse:no")
     kb.adjust(2)
     return kb.as_markup()
 
 def kb_continue():
     kb = InlineKeyboardBuilder()
-    kb.button(text="🧾 Forge Invoice (Confirm Checkout)", callback_data="checkout:continue")
+    kb.button(text="🧾 Confirm Checkout", callback_data="checkout:continue")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -293,12 +293,12 @@ async def dm_start(message: Message):
         upsert_checkout(user_id, stage="idle")
 
         await message.answer(
-            "🌑🏪 <b>NightShade Poké Claims — Poké Mart Counter</b>\n"
-            "Welcome, Trainer… don’t mind the creaking shelves 😌🕯️\n\n"
+            "🎴<b>NightShade Poké Claims — Poké Mart Counter</b>\n"
+            "VVelcome, Trainer… don’t mind the creaking shelves 🧛🏽‍♂️🕯️\n\n"
             "<b>How to claim a card:</b>\n"
             "1) Open a card post in the channel\n"
             "2) Reply <b>claim</b> under that post’s comments/thread\n\n"
-            "When you’ve claimed something, come back here for checkout. 🧾✨",
+            "Vhen you’ve claimed something, come back here for checkout. 🧾✨",
             parse_mode="HTML",
             reply_markup=kb_buyer_home(has_claims=False),
         )
@@ -318,8 +318,8 @@ async def dm_start(message: Message):
     )
 
     await message.answer(
-        "🧺🕯️ <b>NightShade Basket Check</b>\n"
-        "Hehe… your bag has loot. What’s next?\n\n"
+        "🧺🎴 <b>NightShade Basket Check</b>\n"
+        "Ah…Ah…Ah… your bag has loot. Vhat’s next? 🧛🏽‍♂️\n\n"
         f"{summary_text}\n\n"
         "🦇 Tap <b>Checkout Counter</b> to pick delivery and generate your invoice.",
         parse_mode="HTML",
@@ -364,19 +364,14 @@ async def buyer_go_delivery(cb: CallbackQuery):
 
 @router.callback_query(F.data == "buyer:browse_now")
 async def buyer_browse_now(cb: CallbackQuery):
-    await cb.message.answer("🕯️ The shelves are shifting… showing available cards.")
+    await cb.message.answer("🕯️ Peeking into the shadows… showing available cards.")
     await show_available_cards(bot=cb.message.bot, user_id=cb.from_user.id)
-    await cb.answer()
-
-@router.callback_query(F.data == "buyer:panel")
-async def buyer_panel_hint(cb: CallbackQuery):
-    await cb.message.answer("🎒 Open your buyer panel with: <b>/buyerpanel</b>", parse_mode="HTML")
     await cb.answer()
 
 @router.callback_query(F.data == "buyer:help")
 async def buyer_help(cb: CallbackQuery):
     await cb.message.answer(
-        "🧛 <b>Shopkeeper Help Desk</b>\n\n"
+        "🧛🏽‍♂️ <b>Help Desk</b>\n\n"
         "• Can’t claim? Make sure you replied <b>under the card post thread</b> (comments).\n"
         "• Checkout looks wrong? Type <b>/start</b> again.\n"
         "• Special cases? DM the admin.",
@@ -411,7 +406,7 @@ async def delivery_pick(cb: CallbackQuery):
     choice = parts[2] if len(parts) >= 3 else ""
 
     if choice == "human":
-        await cb.message.answer("🧛 Please DM the admin for help.")
+        await cb.message.answer("🧛🏽‍♂️ Please DM the admin for help.")
         await cb.answer()
         return
 
@@ -437,7 +432,7 @@ async def delivery_pick(cb: CallbackQuery):
     )
 
     await cb.message.answer(
-        "🕯️ Want to peek at what’s still lurking on the shelves before invoice?",
+        "🕯️ Want to peek at what’s still lurking in the shadows before invoice?",
         reply_markup=kb_yes_no_browse(),
     )
     await cb.answer()
@@ -456,9 +451,9 @@ async def browse_decision(cb: CallbackQuery):
     if choice == "yes":
         await cb.message.answer("🔍 Showing currently available cards...")
         await show_available_cards(bot=cb.message.bot, user_id=user_id)
-        await cb.message.answer("When you’re ready to forge your invoice:", reply_markup=kb_continue())
+        await cb.message.answer("When you’re ready to scribe your invoice:", reply_markup=kb_continue())
     else:
-        await cb.message.answer("🧾 Forging invoice…", reply_markup=kb_continue())
+        await cb.message.answer("🧾 Scribing invoice…", reply_markup=kb_continue())
 
     await cb.answer()
 
@@ -611,7 +606,7 @@ async def payment_proof_received(message: Message):
 
     await message.answer(
         "✅🕯️ Payment proof received!\n\n"
-        "⏳ Please wait for admin approval.\n"
+        "⏳ Please vvait for admin approval.\n"
         f"Invoice: {invoice_no}"
     )
 
@@ -701,7 +696,7 @@ async def admin_approve(message: Message):
             "✅ <b>Payment Verified — Self Collection Confirmed!</b>\n\n"
             "📍 <b>Collection Location:</b>\n"
             f"{SELF_PICKUP_TEXT}\n\n"
-            "⏰ <b>Collection:</b> Arrange a time with the seller via Telegram DM.\n\n"
+            "⏰ <b>Collection:</b> Arrange a time with the seller @ILoveCatFoochie DM.\n\n"
             f"🧾 <b>Invoice:</b> <code>{invoice_no}</code>\n\n"
             "Thank you! 🕯️"
         ),
@@ -936,14 +931,14 @@ async def addr_confirm(cb: CallbackQuery):
 
     # Notify Admin: order ready to ship
     kb = InlineKeyboardBuilder()
-    kb.button(text="🚚 Start Shipping", callback_data=ShippingActionCB(action="start", invoice=invoice_no).pack())
+    kb.button(text="✅ Marked Shipped", callback_data=ShippingActionCB(action="start", invoice=invoice_no).pack())
     kb.button(text="❌ Cancel Order", callback_data=ShippingActionCB(action="cancel", invoice=invoice_no).pack())
     kb.adjust(2)
 
     await cb.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
-            "📦 <b>ORDER READY TO SHIP</b>\n\n"
+            "📦 <b>ORDER READY TO PACK</b>\n\n"
             f"Invoice: <code>{invoice_no}</code>\n"
             f"Buyer: @{cb.from_user.username or 'NoUsername'}\n"
             f"User ID: <code>{user_id}</code>\n\n"
