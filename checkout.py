@@ -14,7 +14,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import ADMIN_ID, CHANNEL_ID, CHANNEL_USERNAME
-from db import get_db
+from db import get_db, set_payment_proof
 from invoice_pdf import build_invoice_pdf
 from callbacks import PaymentReviewCB, ShippingActionCB
 
@@ -590,7 +590,12 @@ async def payment_proof_received(message: Message):
     invoice_no = ck.get("invoice_no")
     if not invoice_no:
         return
-
+        # ✅ Save payment proof so admin pending list can re-show it later
+    if message.photo:
+        set_payment_proof(invoice_no, message.photo[-1].file_id, "photo")
+    elif message.document:
+        set_payment_proof(invoice_no, message.document.file_id, "document")
+        
     with get_db() as conn:
         conn.execute(
             """
