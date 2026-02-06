@@ -15,7 +15,8 @@ from db import (
     get_admin_session,
     clear_admin_session,
     set_shipping_proof,
-    get_shipping_proof
+    get_shipping_proof,
+    get_payment_proof,
 )
 
 from config import ADMIN_ID, CHANNEL_ID
@@ -489,7 +490,7 @@ async def process_cancel_claims_text(message: Message) -> bool:
         await _send_user_claimed_cards(message, user_id=int(row["user_id"]), username=row.get("username") or None)
         return True
 
-    if stype == "cc_select_items":
+        if stype == "cc_select_items":
         if text == "0":
             await list_cancel_claim_users(message)
             return True
@@ -587,9 +588,28 @@ async def list_pending_payments(message: Message):
             f"<b>Status:</b> PAYMENT RECEIVED"
         )
 
-        await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
+        proof_id, proof_type = get_payment_proof(inv)
 
-
+        if proof_id and proof_type == "photo":
+            await message.answer_photo(
+                photo=proof_id,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
+        elif proof_id and proof_type == "document":
+            await message.answer_document(
+                document=proof_id,
+                caption=text,
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
+        else:
+            await message.answer(
+                text + "\n\n⚠️ <b>No payment proof saved.</b>",
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
 # ===========================
 # LIST READY TO SHIP
 # ===========================
