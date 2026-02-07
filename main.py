@@ -27,8 +27,8 @@ async def setup_bot_commands(bot: Bot):
     # Commands shown to ALL users in private chats
     buyer_cmds = _merge_commands(
         [
-            BotCommand(command="start", description="Start / checkout home"),
-            BotCommand(command="buyerpanel", description="Buyer panel"),
+            BotCommand(command="start", description="🛒Press To Begin Checkout🛒"),
+            BotCommand(command="buyerpanel", description="📮Pokedex📮"),
         ]
     )
     await bot.set_my_commands(buyer_cmds, scope=BotCommandScopeAllPrivateChats())
@@ -37,11 +37,11 @@ async def setup_bot_commands(bot: Bot):
     admin_cmds = _merge_commands(
         buyer_cmds,
         [
-            BotCommand(command="adminpanel", description="Admin panel"),
-            BotCommand(command="pending", description="Pending payments"),
-            BotCommand(command="toship", description="Orders ready to ship"),
-            BotCommand(command="packlist", description="Packing checklist"),
-            BotCommand(command="approve", description="Approve payment: /approve INV-xxx"),
+            BotCommand(command="adminpanel", description="🛠️Admin panel"),
+            BotCommand(command="pending", description="⏳Pending payments"),
+            BotCommand(command="toship", description="📦Orders ready to pack"),
+            BotCommand(command="packlist", description="📋Packing List"),
+            BotCommand(command="approve", description="✅Approve Payment❌"),
         ],
     )
     await bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
