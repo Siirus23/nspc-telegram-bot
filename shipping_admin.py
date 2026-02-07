@@ -487,14 +487,20 @@ async def process_cancel_claims_text(message: Message) -> bool:
             await message.answer("❌ Invalid number. Try again.")
             return True
 
-        await _send_user_claimed_cards(message, user_id=int(row["user_id"]), username=row.get("username") or None)
+        # Move to item-selection view for this buyer
+        await _send_user_claimed_cards(
+            message,
+            user_id=int(row["user_id"]),
+            username=row.get("username") or None,
+        )
         return True
 
-        if stype == "cc_select_items":
+    if stype == "cc_select_items":
         if text == "0":
             await list_cancel_claim_users(message)
             return True
 
+        # NOTE: admin_sessions.invoice_no stores the selected buyer_id for this flow
         user_id = int(sess.get("invoice_no") or "0")
         if not user_id:
             await list_cancel_claim_users(message)
@@ -521,7 +527,11 @@ async def process_cancel_claims_text(message: Message) -> bool:
         invoice_touched = None
 
         for g in chosen:
-            res = await _admin_cancel_claim_group(message, user_id=user_id, post_mid=int(g["post_mid"]))
+            res = await _admin_cancel_claim_group(
+                message,
+                user_id=user_id,
+                post_mid=int(g["post_mid"]),
+            )
             if res:
                 removed_lines.append(f"• {res['card_name']} x<code>{res['qty']}</code>")
                 if res.get("order_cancelled"):
@@ -546,12 +556,6 @@ async def process_cancel_claims_text(message: Message) -> bool:
         return True
 
     return False
-
-
-# ===========================
-# PENDING PAYMENTS LIST
-# ===========================
-
 async def list_pending_payments(message: Message):
     with get_db() as conn:
         cur = conn.cursor()
@@ -613,6 +617,11 @@ async def list_pending_payments(message: Message):
 # ===========================
 # LIST READY TO SHIP
 # ===========================
+
+@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("pending"))
+async def cmd_pending(message: Message):
+    await list_pending_payments(message)
+
 
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("toship"))
 async def list_orders_ready(message: Message):
