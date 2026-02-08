@@ -3,8 +3,8 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+# TEMP: SQLite admin session helpers removed during Supabase migration
 
-from db import get_db, set_admin_session, get_admin_session, clear_admin_session
 from invoice_pdf import build_invoice_pdf
 
 from db import (
