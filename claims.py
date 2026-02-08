@@ -2,7 +2,8 @@ from aiogram import Router, F
 from aiogram.types import Message
 from datetime import datetime, timedelta
 
-from db import get_db
+# TEMP: SQLite admin session helpers removed during Supabase migration
+
 from config import CHANNEL_ID, ADMIN_ID
 
 router = Router()
