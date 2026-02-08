@@ -202,3 +202,19 @@ async def complete_shipping_session(order_id: int):
             """,
             order_id
         )
+
+async def get_active_shipping_session_by_admin(admin_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT *
+            FROM shipping_sessions
+            WHERE admin_id = $1
+              AND step = 'awaiting_photo'
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            admin_id
+        )
+
