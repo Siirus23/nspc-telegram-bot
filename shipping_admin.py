@@ -15,18 +15,13 @@ from callbacks import (
 from ocr_utils import extract_text_from_photo, extract_tracking_number
 
 from db import (
-    get_db,
-    set_admin_session,
-    get_admin_session,
-    clear_admin_session,
-    set_shipping_proof,
-    get_shipping_proof,
-    get_payment_proof,
-    mark_order_packed,
+    get_orders_by_status,
+    create_shipping_session,
+    get_active_shipping_session,
+    update_shipping_session,
+    complete_shipping_session,
     mark_order_shipped,
-    STATUS_PACKING_PENDING,
     STATUS_PACKED,
-    STATUS_SHIPPED,
 )
 
 from config import ADMIN_ID, CHANNEL_ID
@@ -219,12 +214,7 @@ async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionC
 # ======================================================
 
 async def show_orders_ready_to_ship(message: Message):
-    with get_db() as conn:
-        orders = conn.execute("""
-            SELECT id, invoice_no, username
-            FROM orders
-            WHERE status = ?
-        """, (STATUS_PACKED,)).fetchall()
+   orders = await get_orders_by_status(STATUS_PACKED)
 
     if not orders:
         await message.answer("🚚 No orders ready to ship.")
@@ -249,70 +239,55 @@ async def show_orders_ready_to_ship(message: Message):
 
 @router.callback_query(ShippingActionCB.filter(F.action == "start"))
 async def start_shipping(cb: CallbackQuery, callback_data: ShippingActionCB):
-    set_admin_session(ADMIN_ID, "awaiting_tracking", callback_data.invoice)
+    invoice_no = callback_data.invoice
+
+    # Find the order that is packed and ready to ship
+    orders = await get_orders_by_status(STATUS_PACKED)
+    order = next((o for o in orders if o["invoice_no"] == invoice_no), None)
+
+    if not order:
+        await cb.answer("❌ Order not found or not ready to ship.", show_alert=True)
+        return
+
+    # Create a shipping session (crash-safe)
+    await create_shipping_session(
+        admin_id=cb.from_user.id,
+        order_id=order["id"]
+    )
+
     await cb.bot.send_message(
-        ADMIN_ID,
-        f"📦 Send tracking for <code>{callback_data.invoice}</code>",
+        cb.from_user.id,
+        f"📦 Shipping started for <code>{invoice_no}</code>\n\n"
+        "📸 Please upload the shipping label photo.",
         parse_mode="HTML"
     )
+
     await cb.answer()
 
+
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
-async def admin_tracking_photo(message: Message):
-    sess = get_admin_session(ADMIN_ID)
-    if not sess or sess["session_type"] != "awaiting_tracking":
-        return
+async def admin_shipping_photo(message: Message):
+    # Find active shipping session waiting for photo
+    session = await get_active_shipping_session_by_admin(message.from_user.id)
 
-    invoice = sess["invoice_no"]
-    set_shipping_proof(invoice, message.photo[-1].file_id)
+    if not session:
+        return  # No active shipping flow
 
-    text = await extract_text_from_photo(message.bot, message)
-    if not text:
-        await message.answer("OCR failed. Type tracking manually.")
-        return
+    # Get the highest resolution photo
+    photo_file_id = message.photo[-1].file_id
 
-    tracking = extract_tracking_number(text)
-    if not tracking:
-        await message.answer("Tracking not detected. Type manually.")
-        return
+    # Save photo into the shipping session
+    await update_shipping_session(
+        order_id=session["order_id"],
+        photo_file_id=photo_file_id,
+        step="awaiting_confirmation"
+    )
 
-    message.text = tracking
-    await process_tracking_text(message)
-
-async def process_tracking_text(message: Message):
-    sess = get_admin_session(ADMIN_ID)
-    if not sess or sess["session_type"] != "awaiting_tracking":
-        return
-
-    tracking = TRACKING_REGEX.search(message.text.upper())
-    if not tracking:
-        await message.answer("❌ Invalid tracking format.")
-        return
-
-    invoice = sess["invoice_no"]
-
-    with get_db() as conn:
-        row = conn.execute(
-            "SELECT user_id FROM orders WHERE invoice_no = ?",
-            (invoice,)
-        ).fetchone()
-
-        mark_order_shipped(
-            conn,
-            invoice_no=invoice,
-            tracking_number=tracking.group(0),
-            proof_file_id=get_shipping_proof(invoice)
-        )
-
-    clear_admin_session(ADMIN_ID)
-    await message.answer(f"✅ Shipped <code>{invoice}</code>", parse_mode="HTML")
-
-    if row:
-        await message.bot.send_message(
-            row["user_id"],
-            f"📦 <b>Shipped!</b>\nTracking: <code>{tracking.group(0)}</code>",
-            parse_mode="HTML"
-        )
+    await message.answer(
+        "📸 Shipping photo received.\n\n"
+        "⏳ Processing tracking number…",
+        parse_mode="HTML"
+    )
 
 # ======================================================
 # CANCEL CLAIMS WIZARD (VERBATIM — UNCHANGED)
