@@ -2,6 +2,26 @@ import sqlite3
 
 DB_NAME = "cards.db"
 
+# ===========================
+# ORDER STATUSES
+# ===========================
+
+STATUS_AWAITING_PAYMENT = "awaiting_payment"
+STATUS_VERIFYING = "verifying"
+STATUS_AWAITING_ADDRESS = "awaiting_address"
+STATUS_PACKING_PENDING = "packing_pending"
+STATUS_PACKED = "packed"
+STATUS_SHIPPED = "shipped"
+
+VALID_STATUSES = {
+    STATUS_AWAITING_PAYMENT,
+    STATUS_VERIFYING,
+    STATUS_AWAITING_ADDRESS,
+    STATUS_PACKING_PENDING,
+    STATUS_PACKED,
+    STATUS_SHIPPED,
+}
+
 
 def get_db():
     conn = sqlite3.connect(DB_NAME)
@@ -167,6 +187,27 @@ def clear_admin_session(admin_id: int):
         conn.commit()
 
 
+def get_orders_pending_packing(conn):
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM orders
+        WHERE status = ?
+        ORDER BY created_at ASC
+    """, (STATUS_PACKING_PENDING,))
+    return cur.fetchall()
+
+def get_orders_ready_to_ship(conn):
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT *
+        FROM orders
+        WHERE status = ?
+        ORDER BY created_at ASC
+    """, (STATUS_PACKED,))
+    return cur.fetchall()
+
+
 # =========================
 # SHIPPING PROOF HELPERS
 # =========================
@@ -215,3 +256,48 @@ def get_payment_proof(invoice_no: str):
         if not row:
             return None, None
         return row["payment_proof_file_id"], row["payment_proof_type"]
+
+# =========================
+# ORDER STATUS HELPERS
+# =========================
+
+def update_order_status(conn, invoice_no: str, new_status: str):
+    """
+    Single source of truth for updating order status.
+    """
+    if new_status not in VALID_STATUSES:
+        raise ValueError(f"Invalid order status: {new_status}")
+
+    conn.execute(
+        "UPDATE orders SET status = ? WHERE invoice_no = ?",
+        (new_status, invoice_no),
+    )
+    conn.commit()
+
+
+
+def mark_order_packing_pending(conn, invoice_no: str):
+    update_order_status(conn, invoice_no, STATUS_PACKING_PENDING)
+
+def mark_order_packed(conn, invoice_no: str):
+    update_order_status(conn, invoice_no, STATUS_PACKED)
+
+def mark_order_shipped(conn, invoice_no: str, tracking_number: str, proof_file_id: str | None = None):
+    if STATUS_SHIPPED not in VALID_STATUSES:
+        raise ValueError("Invalid shipped status")
+
+    conn.execute(
+        """
+        UPDATE orders
+        SET status = ?,
+            tracking_number = ?,
+            shipping_proof_file_id = ?
+        WHERE invoice_no = ?
+        """,
+        (STATUS_SHIPPED, tracking_number, proof_file_id, invoice_no),
+    )
+    conn.commit()
+
+
+
+
