@@ -636,10 +636,10 @@ async def list_orders_ready(message: Message):
         rows = cur.fetchall()
 
     if not rows:
-        await message.answer("📦 No orders currently ready to pack.")
+        await message.answer("📦 No Pending Orders.")
         return
 
-    await message.answer("📦 <b>Orders Ready To Pack:</b>", parse_mode="HTML")
+    await message.answer("📦 <b>Orders Ready To Ship:</b>", parse_mode="HTML")
 
     for r in rows:
         inv = r["invoice_no"]
@@ -647,7 +647,7 @@ async def list_orders_ready(message: Message):
         total = float(r["total"] or 0)
 
         kb = InlineKeyboardBuilder()
-        kb.button(text="🚚 Start Shipping", callback_data=ShippingActionCB(action="start", invoice=inv).pack())
+        kb.button(text="🚚 Mark Shipped", callback_data=ShippingActionCB(action="start", invoice=inv).pack())
         kb.button(text="❌ Cancel Order", callback_data=ShippingActionCB(action="cancel", invoice=inv).pack())
         kb.adjust(2)
 
@@ -655,7 +655,7 @@ async def list_orders_ready(message: Message):
             f"<b>Invoice:</b> <code>{inv}</code>\n"
             f"<b>Buyer:</b> @{user}\n"
             f"<b>Total:</b> ${total:.2f}\n"
-            f"<b>Status:</b> READY TO PACK"
+            f"<b>Status:</b> READY TO SHIP"
         )
 
         await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
