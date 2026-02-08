@@ -214,7 +214,7 @@ async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionC
 # ======================================================
 
 async def show_orders_ready_to_ship(message: Message):
-   orders = await get_orders_by_status(STATUS_PACKED)
+    orders = await get_orders_by_status(STATUS_PACKED)
 
     if not orders:
         await message.answer("🚚 No orders ready to ship.")
@@ -224,7 +224,10 @@ async def show_orders_ready_to_ship(message: Message):
         kb = InlineKeyboardBuilder()
         kb.button(
             text="🚚 Mark as Shipped",
-            callback_data=ShippingActionCB(action="start", invoice=o["invoice_no"]).pack()
+            callback_data=ShippingActionCB(
+                action="start",
+                invoice=o["invoice_no"]
+            ).pack()
         )
 
         await message.answer(
