@@ -660,7 +660,10 @@ async def admin_approve(message: Message):
 
     with get_db() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT user_id, delivery_method FROM orders WHERE invoice_no = ?", (invoice_no,))
+        cur.execute(
+            "SELECT user_id, delivery_method FROM orders WHERE invoice_no = ?",
+            (invoice_no,)
+        )
         row = cur.fetchone()
 
         if not row:
@@ -670,36 +673,42 @@ async def admin_approve(message: Message):
         user_id = int(row["user_id"])
         delivery_method = row["delivery_method"]
 
-        conn.execute("UPDATE orders SET status = 'verifying' WHERE invoice_no = ?", (invoice_no,))
+        conn.execute(
+            "UPDATE orders SET status = 'verifying' WHERE invoice_no = ?",
+            (invoice_no,)
+        )
 
+    # Only tracked orders need address collection
     if delivery_method == "tracked":
-        upsert_checkout(user_id, stage="awaiting_address", invoice_no=invoice_no)
+        upsert_checkout(
+            user_id,
+            stage="awaiting_address",
+            invoice_no=invoice_no
+        )
 
-    await message.bot.send_message(
-        chat_id=user_id,
-        text=(
-            "✅ <b>Payment verified!</b>\n\n"
-            "📮 <b>Next Step: Shipping Details</b>\n\n"
-            "Copy the template below, fill it in, and send it back in <b>ONE message</b>:"
-        ),
-        parse_mode="HTML",
-    )
+        await message.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "✅ <b>Payment verified!</b>\n\n"
+                "📮 <b>Next Step: Shipping Details</b>\n\n"
+                "Copy the template below, fill it in, and send it back in <b>ONE message</b>:"
+            ),
+            parse_mode="HTML",
+        )
 
-    await message.bot.send_message(
-        chat_id=user_id,
-        text=(
-            f"<code>{address_template()}</code>\n\n"
-            f"Invoice: <code>{invoice_no}</code>\n"
-            "⚠️ Keep the field names the same."
-        ),
-        parse_mode="HTML",
-    )
+        await message.bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"<code>{address_template()}</code>\n\n"
+                f"Invoice: <code>{invoice_no}</code>\n"
+                "⚠️ Keep the field names the same."
+            ),
+            parse_mode="HTML",
+        )
 
+    # Admin confirmation (runs once)
     await message.answer(f"✅ Approved {invoice_no} (awaiting address)")
-    return
 
-        await message.answer(f"✅ Approved {invoice_no} (awaiting address)")
-        return
 
     # self collection
     with get_db() as conn:
