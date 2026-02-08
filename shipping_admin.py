@@ -4,11 +4,15 @@ from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from callbacks import ShippingActionCB, PackingActionCB
+import re
+
+from callbacks import (
+    ShippingActionCB,
+    PackingActionCB,
+    PaymentReviewCB,
+)
 
 from ocr_utils import extract_text_from_photo, extract_tracking_number
-
-import re
 
 from db import (
     get_db,
@@ -21,7 +25,7 @@ from db import (
     mark_order_packed,
     mark_order_shipped,
     STATUS_PACKING_PENDING,
-    STATUS_PACKED, 
+    STATUS_PACKED,
     STATUS_SHIPPED,
 )
 
@@ -32,47 +36,32 @@ router = Router()
 TRACKING_REGEX = re.compile(r"[A-Za-z]{2}\d{9}SG", re.IGNORECASE)
 INVOICE_REGEX = re.compile(r"^INV-\d+$", re.IGNORECASE)
 
-
-# ===========================
+# ======================================================
 # ADMIN HELP TEXT
-# ===========================
+# ======================================================
 
 def admin_help_text():
     return """
 🛠 <b>Admin Panel Guide</b>
 
 🕒 Pending Payment Approvals
-- Shows all payments awaiting approval
-
-📦 Orders Ready To Pack
-- Shows all paid & address-confirmed orders (READY TO SHIP)
-
-🧾 Packing List
-- Checklist of items to pack for READY TO SHIP orders
-
-🚚 Orders Shipped
-- Recently shipped orders list
-
+📦 Packing List (mark packed)
+🚚 Orders Ready To Ship
+✅ Orders Shipped
 ⌨️ Type Tracking (OCR Fail)
-- Manual fallback: type invoice first, then tracking
-
-❌ Cancel Claims
-- Admin wizard to remove buyer claims + restore stock
-
+❌ Cancel Claims (admin wizard)
 ❌ Cancel Shipping Session
-- Reset current admin workflow session
 """
 
-
-# ===========================
-# ADMIN PANEL
-# ===========================
+# ======================================================
+# ADMIN PANEL UI
+# ======================================================
 
 def build_admin_panel():
     kb = InlineKeyboardBuilder()
 
     kb.button(text="🕒 Pending Payment Approvals", callback_data="admin:pendingpay")
-    kb.button(text="🧾 Packing List", callback_data="admin:packlist")
+    kb.button(text="📦 Packing List", callback_data="admin:packlist")
     kb.button(text="🚚 Orders Ready To Ship", callback_data="admin:toship")
     kb.button(text="✅ Orders Shipped", callback_data="admin:shipped")
     kb.button(text="⌨️ Type Tracking (OCR Fail)", callback_data="admin:manual")
@@ -83,56 +72,17 @@ def build_admin_panel():
     kb.adjust(1)
     return kb.as_markup()
 
-
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("adminpanel"))
 async def show_admin_panel(message: Message):
     await message.answer(
-        "🛠 <b>Admin Control Panel</b>\n\nSelect an action:",
+        "🛠 <b>Admin Control Panel</b>",
         parse_mode="HTML",
-        reply_markup=build_admin_panel()
+        reply_markup=build_admin_panel(),
     )
 
-
-# ===========================
-# SHIPPED ORDERS LIST
-# ===========================
-
-async def list_shipped_orders(message: Message):
-    with get_db() as conn:
-        cur = conn.cursor()
-
-        # SQL with a placeholder (?)
-        cur.execute(
-            """
-            SELECT invoice_no, username, tracking_number
-            FROM orders
-            WHERE status = ?
-            ORDER BY created_at DESC
-            LIMIT 20
-            """,
-            (STATUS_SHIPPED,)   # ← THIS IS THE “AND PASS” PART
-        )
-
-        rows = cur.fetchall()
-
-    if not rows:
-        await message.answer("📭 No shipped orders found.")
-        return
-
-    text = ["🚚 <b>Recently Shipped Orders</b>\n"]
-    for r in rows:
-        text.append(
-            f"• <code>{r['invoice_no']}</code> – "
-            f"@{r['username'] or 'NoUsername'} – "
-            f"<code>{r['tracking_number']}</code>"
-        )
-
-    await message.answer("\n".join(text), parse_mode="HTML")
-
-
-# ===========================
-# ADMIN PANEL CALLBACKS
-# ===========================
+# ======================================================
+# ADMIN PANEL ROUTER
+# ======================================================
 
 @router.callback_query(F.data.startswith("admin:"))
 async def admin_panel_actions(cb: CallbackQuery):
@@ -142,22 +92,23 @@ async def admin_panel_actions(cb: CallbackQuery):
 
     action = cb.data.split(":", 1)[1]
 
-    if  action == "packlist":
+    if action == "pendingpay":
+        await list_pending_payments(cb.message)
+
+    elif action == "packlist":
         await generate_packlist(cb.message)
 
     elif action == "toship":
         await show_orders_ready_to_ship(cb.message)
-        
+
+    elif action == "shipped":
+        await list_shipped_orders(cb.message)
+
     elif action == "manual":
-        # Manual fallback flow: invoice first, then tracking
         set_admin_session(ADMIN_ID, "awaiting_tracking_invoice", None)
         await cb.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                "⌨️ <b>Type Tracking (OCR Fail)</b>\n\n"
-                "Send the invoice number first.\n"
-                "Example: <code>INV-000016</code>"
-            ),
+            ADMIN_ID,
+            "⌨️ <b>Manual Tracking</b>\n\nSend invoice number first.",
             parse_mode="HTML",
         )
 
@@ -166,27 +117,206 @@ async def admin_panel_actions(cb: CallbackQuery):
 
     elif action == "cancelship":
         clear_admin_session(ADMIN_ID)
-        await cb.bot.send_message(
-            chat_id=ADMIN_ID,
-            text="✅ Shipping session cleared."
-        )
+        await cb.bot.send_message(ADMIN_ID, "✅ Shipping session cleared.")
 
     elif action == "help":
-        await cb.bot.send_message(
-            chat_id=ADMIN_ID,
-            text=admin_help_text(),
-            parse_mode="HTML"
-        )
-
-    elif action == "pendingpay":
-        await list_pending_payments(cb.message)
+        await cb.bot.send_message(ADMIN_ID, admin_help_text(), parse_mode="HTML")
 
     await cb.answer()
 
+# ======================================================
+# PAYMENT REVIEW
+# ======================================================
 
-# ===========================
-# CANCEL CLAIMS (ADMIN WIZARD)
-# ===========================
+async def list_pending_payments(message: Message):
+    with get_db() as conn:
+        cur = conn.execute("""
+            SELECT invoice_no, username, total
+            FROM orders
+            WHERE status = 'payment_received'
+            ORDER BY created_at ASC
+        """)
+        rows = cur.fetchall()
+
+    if not rows:
+        await message.answer("✅ No payments awaiting approval.")
+        return
+
+    for r in rows:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="✅ Approve", callback_data=PaymentReviewCB(action="approve", invoice=r["invoice_no"]).pack())
+        kb.button(text="❌ Reject", callback_data=PaymentReviewCB(action="reject", invoice=r["invoice_no"]).pack())
+        kb.adjust(2)
+
+        proof_id, proof_type = get_payment_proof(r["invoice_no"])
+
+        caption = (
+            f"<b>Invoice:</b> <code>{r['invoice_no']}</code>\n"
+            f"<b>Buyer:</b> @{r['username'] or 'NoUsername'}\n"
+            f"<b>Total:</b> ${float(r['total']):.2f}"
+        )
+
+        if proof_id and proof_type == "photo":
+            await message.answer_photo(proof_id, caption=caption, parse_mode="HTML", reply_markup=kb.as_markup())
+        else:
+            await message.answer(caption, parse_mode="HTML", reply_markup=kb.as_markup())
+
+# ======================================================
+# PACKING LIST
+# ======================================================
+
+@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("packlist"))
+async def generate_packlist(message: Message):
+    with get_db() as conn:
+        orders = conn.execute("""
+            SELECT id, invoice_no, username
+            FROM orders
+            WHERE status = ?
+            ORDER BY created_at ASC
+        """, (STATUS_PACKING_PENDING,)).fetchall()
+
+    if not orders:
+        await message.answer("📦 No orders to pack.")
+        return
+
+    for o in orders:
+        items = conn.execute("""
+            SELECT card_name, qty FROM order_items WHERE order_id = ?
+        """, (o["id"],)).fetchall()
+
+        text = f"📦 <b>{o['invoice_no']}</b> – @{o['username'] or 'Unknown'}\n\n"
+        for it in items:
+            text += f"- {it['card_name']} (x{it['qty']})\n"
+
+        kb = InlineKeyboardBuilder()
+        kb.button(
+            text="📦 Mark as Packed",
+            callback_data=PackingActionCB(action="packed", invoice=o["invoice_no"]).pack()
+        )
+
+        await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
+
+@router.callback_query(PackingActionCB.filter())
+async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionCB):
+    with get_db() as conn:
+        mark_order_packed(conn, callback_data.invoice)
+        row = conn.execute(
+            "SELECT user_id FROM orders WHERE invoice_no = ?",
+            (callback_data.invoice,)
+        ).fetchone()
+
+    await cb.answer("📦 Marked as packed")
+
+    if row:
+        await cb.bot.send_message(
+            row["user_id"],
+            "📦 <b>Your order has been packed.</b>",
+            parse_mode="HTML"
+        )
+
+# ======================================================
+# READY TO SHIP
+# ======================================================
+
+async def show_orders_ready_to_ship(message: Message):
+    with get_db() as conn:
+        orders = conn.execute("""
+            SELECT id, invoice_no, username
+            FROM orders
+            WHERE status = ?
+        """, (STATUS_PACKED,)).fetchall()
+
+    if not orders:
+        await message.answer("🚚 No orders ready to ship.")
+        return
+
+    for o in orders:
+        kb = InlineKeyboardBuilder()
+        kb.button(
+            text="🚚 Mark as Shipped",
+            callback_data=ShippingActionCB(action="start", invoice=o["invoice_no"]).pack()
+        )
+
+        await message.answer(
+            f"🚚 <b>{o['invoice_no']}</b> – @{o['username'] or 'Unknown'}",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
+
+# ======================================================
+# SHIPPING FLOW
+# ======================================================
+
+@router.callback_query(ShippingActionCB.filter(F.action == "start"))
+async def start_shipping(cb: CallbackQuery, callback_data: ShippingActionCB):
+    set_admin_session(ADMIN_ID, "awaiting_tracking", callback_data.invoice)
+    await cb.bot.send_message(
+        ADMIN_ID,
+        f"📦 Send tracking for <code>{callback_data.invoice}</code>",
+        parse_mode="HTML"
+    )
+    await cb.answer()
+
+@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
+async def admin_tracking_photo(message: Message):
+    sess = get_admin_session(ADMIN_ID)
+    if not sess or sess["session_type"] != "awaiting_tracking":
+        return
+
+    invoice = sess["invoice_no"]
+    set_shipping_proof(invoice, message.photo[-1].file_id)
+
+    text = await extract_text_from_photo(message.bot, message)
+    if not text:
+        await message.answer("OCR failed. Type tracking manually.")
+        return
+
+    tracking = extract_tracking_number(text)
+    if not tracking:
+        await message.answer("Tracking not detected. Type manually.")
+        return
+
+    message.text = tracking
+    await process_tracking_text(message)
+
+async def process_tracking_text(message: Message):
+    sess = get_admin_session(ADMIN_ID)
+    if not sess or sess["session_type"] != "awaiting_tracking":
+        return
+
+    tracking = TRACKING_REGEX.search(message.text.upper())
+    if not tracking:
+        await message.answer("❌ Invalid tracking format.")
+        return
+
+    invoice = sess["invoice_no"]
+
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT user_id FROM orders WHERE invoice_no = ?",
+            (invoice,)
+        ).fetchone()
+
+        mark_order_shipped(
+            conn,
+            invoice_no=invoice,
+            tracking_number=tracking.group(0),
+            proof_file_id=get_shipping_proof(invoice)
+        )
+
+    clear_admin_session(ADMIN_ID)
+    await message.answer(f"✅ Shipped <code>{invoice}</code>", parse_mode="HTML")
+
+    if row:
+        await message.bot.send_message(
+            row["user_id"],
+            f"📦 <b>Shipped!</b>\nTracking: <code>{tracking.group(0)}</code>",
+            parse_mode="HTML"
+        )
+
+# ======================================================
+# CANCEL CLAIMS WIZARD (VERBATIM — UNCHANGED)
+# ======================================================
 
 async def list_cancel_claim_users(message: Message):
     """Step 1: show numbered users who still have active claims."""
@@ -627,332 +757,3 @@ async def list_pending_payments(message: Message):
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("pending"))
 async def cmd_pending(message: Message):
     await list_pending_payments(message)
-
-# ===========================
-# PACKING LIST
-# ===========================
-
-@router.message(
-    F.chat.type == "private",
-    F.from_user.id == ADMIN_ID,
-    Command("packlist")
-)
-async def generate_packlist(message: Message):
-    with get_db() as conn:
-        cur = conn.cursor()
-
-        # 1️⃣ Fetch orders pending packing
-        cur.execute("""
-            SELECT id, invoice_no, username
-            FROM orders
-            WHERE status = ?
-            ORDER BY created_at ASC
-        """, (STATUS_PACKING_PENDING,))
-        orders = cur.fetchall()
-
-        if not orders:
-            await message.answer("📦 No orders currently ready to pack.")
-            return
-
-        # 2️⃣ Send one message PER order
-        for order in orders:
-            order_id = order["id"]
-            invoice_no = order["invoice_no"]
-            username = order["username"] or "Unknown"
-
-            text = f"📦 <b>Order to Pack</b>\n\n"
-            text += f"<b>{invoice_no}</b> – @{username}\n\n"
-
-            # 3️⃣ Fetch items for this order
-            cur.execute("""
-                SELECT card_name, qty
-                FROM order_items
-                WHERE order_id = ?
-            """, (order_id,))
-            items = cur.fetchall()
-
-            for item in items:
-                text += f"- {item['card_name']} (x{item['qty']})\n"
-
-            # 4️⃣ Inline keyboard for THIS order
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="📦 Mark as Packed",
-                            callback_data=PackingActionCB(
-                                action="packed",
-                                invoice=invoice_no
-                            ).pack()
-
-                        )
-                    ]
-                ]
-            )
-
-            # 5️⃣ Send message + button
-            await message.answer(
-                text,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-
-@router.callback_query(PackingActionCB.filter())
-async def handle_packing_action(
-    cb: CallbackQuery,
-    callback_data: PackingActionCB
-):
-    invoice_no = callback_data.invoice
-    action = callback_data.action
-
-    # Safety check
-    if action != "packed":
-        await cb.answer("❌ Invalid packing action", show_alert=True)
-        return
-
-    # 1️⃣ Update DB
-    with get_db() as conn:
-        mark_order_packed(conn, invoice_no)
-
-        cur = conn.execute(
-            "SELECT user_id FROM orders WHERE invoice_no = ?",
-            (invoice_no,)
-        )
-        row = cur.fetchone()
-
-    # 2️⃣ Acknowledge admin
-    await cb.answer("📦 Order marked as packed")
-
-    # 3️⃣ Notify buyer
-    if row:
-        await cb.bot.send_message(
-            row["user_id"],
-            "📦 <b>Your order has been packed!</b>\n\n"
-            "We’ll notify you once it ships.",
-            parse_mode="HTML"
-        )
-
-    # 4️⃣ Update admin message (optional)
-    try:
-        await cb.message.edit_text(
-            cb.message.text + "\n\n✅ <b>Status:</b> Packed",
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-# ===========================
-# ORDERS READY TO SHIP
-# ===========================
-
-@router.message(
-    F.chat.type == "private",
-    F.from_user.id == ADMIN_ID,
-    Command("readytoship")
-)
-async def show_orders_ready_to_ship(message: Message):
-    with get_db() as conn:
-        cur = conn.cursor()
-
-        # 1️⃣ Fetch packed orders
-        cur.execute("""
-            SELECT id, invoice_no, username
-            FROM orders
-            WHERE status = ?
-            ORDER BY created_at ASC
-        """, (STATUS_PACKED,))
-        orders = cur.fetchall()
-
-        if not orders:
-            await message.answer("🚚 No orders currently ready to ship.")
-            return
-
-        # 2️⃣ One message per order
-        for order in orders:
-            order_id = order["id"]
-            invoice_no = order["invoice_no"]
-            username = order["username"] or "Unknown"
-
-            text = "🚚 <b>Order Ready To Ship</b>\n\n"
-            text += f"<b>{invoice_no}</b> – @{username}\n\n"
-
-            # 3️⃣ Fetch items
-            cur.execute("""
-                SELECT card_name, qty
-                FROM order_items
-                WHERE order_id = ?
-            """, (order_id,))
-            items = cur.fetchall()
-
-            for item in items:
-                text += f"- {item['card_name']} (x{item['qty']})\n"
-
-            # 4️⃣ Button: Mark as Shipped
-            kb = InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="🚚 Mark as Shipped",
-                            callback_data=ShippingActionCB(
-                                action="start",
-                                invoice=invoice_no
-                            ).pack()
-                        )
-                    ]
-                ]
-            )
-
-            # 5️⃣ Send
-            await message.answer(
-                text,
-                parse_mode="HTML",
-                reply_markup=kb
-            )
-
-# ===========================
-# SHIPPING LABEL PHOTO (STEP 3C)
-# ===========================
-
-@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
-async def admin_shipping_photo(message: Message):
-    # 1️⃣ Check active shipping session
-    sess = get_admin_session(ADMIN_ID)
-    if not sess or sess.get("session_type") != "awaiting_tracking":
-        await message.answer("⚠️ No active shipping session.")
-        return
-
-    invoice_no = sess.get("invoice_no")
-
-    # 2️⃣ Save proof-of-shipping photo
-    proof_file_id = message.photo[-1].file_id
-    set_shipping_proof(invoice_no, proof_file_id)
-
-    # 3️⃣ OCR the image
-    text = await extract_text_from_photo(message.bot, message)
-
-    if not text:
-        await message.answer(
-            "⚠️ Could not read text from image.\n\n"
-            "Please type the tracking number manually (e.g. RR123456789SG)."
-        )
-        return
-
-    # 4️⃣ Extract tracking number from OCR text
-    tracking = extract_tracking_number(text)
-
-    if not tracking:
-        await message.answer(
-            "❌ Tracking number not detected.\n\n"
-            "Please type the tracking number manually (e.g. RR123456789SG)."
-        )
-        return
-
-    # 5️⃣ Autofill tracking into text handler
-    message.text = tracking
-    await process_tracking_text(message)
-
-
-# ===========================
-# START SHIPPING SESSION
-# ===========================
-
-@router.callback_query(ShippingActionCB.filter(F.action == "start"))
-async def start_shipping_button(cb: CallbackQuery, callback_data: ShippingActionCB):
-    invoice_no = callback_data.invoice
-    set_admin_session(ADMIN_ID, "awaiting_tracking", invoice_no)
-
-    await cb.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=(
-            f"📦 <b>Shipping started</b>\n\n"
-            f"Invoice: <code>{invoice_no}</code>\n\n"
-            "📸 Please upload the shipping label / barcode photo.\n"
-            "⌨️ If OCR fails, you may type the tracking number manually."
-        ),
-        parse_mode="HTML"
-    )
-    await cb.answer()
-
-
-# ===========================
-# TRACKING HANDLERS
-# ===========================
-
-
-@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.text, ~F.text.startswith("/"))
-async def admin_tracking_catcher(message: Message):
-    handled = await process_manual_tracking_invoice_text(message)
-    if handled:
-        return
-
-    handled = await process_tracking_text(message)
-    if handled:
-        return
-
-    handled = await process_cancel_claims_text(message)
-    if handled:
-        return
-
-
-async def process_tracking_text(message: Message) -> bool:
-    sess = get_admin_session(ADMIN_ID)
-    if not sess or sess.get("session_type") != "awaiting_tracking":
-        return False
-
-    invoice_no = sess.get("invoice_no")
-
-    m = TRACKING_REGEX.search((message.text or "").upper())
-    if not m:
-        await message.answer("❌ Invalid tracking format.")
-        return True
-
-    tracking = m.group(0)
-
-    from db import mark_order_shipped
-
-    with get_db() as conn:
-        # Fetch buyer BEFORE shipping
-        cur = conn.cursor()
-        cur.execute("SELECT user_id FROM orders WHERE invoice_no = ?", (invoice_no,))
-        row = cur.fetchone()
-
-        # Use DB helper (single source of truth)
-        mark_order_shipped(
-            conn,
-            invoice_no=invoice_no,
-            tracking_number=tracking,
-            proof_file_id=get_shipping_proof(invoice_no)
-        )
-
-    clear_admin_session(ADMIN_ID)
-
-    await message.answer(f"✅ Tracking saved for <code>{invoice_no}</code>", parse_mode="HTML")
-
-    if row:
-
-        proof_file_id = get_shipping_proof(invoice_no)
-        if proof_file_id:
-            try:
-                await message.bot.send_photo(
-                    chat_id=row["user_id"],
-                    photo=proof_file_id,
-                    caption="📦 Proof of shipping",
-                )
-            except Exception:
-                # If photo fails (e.g. file_id invalid), still send tracking text
-                pass
-
-        await message.bot.send_message(
-            chat_id=row["user_id"],
-            text=(
-                "📦 <b>Your Order Has Been Shipped!</b>\n\n"
-                f"<b>Invoice:</b> {invoice_no}\n"
-                f"<b>Tracking Number:</b> {tracking}\n\n"
-                "📍 <b>Track here:</b>\n"
-                f"https://www.singpost.com/track-items?trackNums={tracking}\n\n"
-                "Thank you for your purchase! 😊"
-            ),
-            parse_mode="HTML"
-        )
-
-    return True
