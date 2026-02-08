@@ -8,9 +8,6 @@ from callbacks import ShippingActionCB, PackingActionCB
 
 from ocr_utils import extract_text_from_photo, extract_tracking_number
 
-from db import mark_order_shipped, STATUS_PACKED, STATUS_SHIPPED
-
-
 import re
 
 from db import (
@@ -22,6 +19,10 @@ from db import (
     get_shipping_proof,
     get_payment_proof,
     mark_order_packed,
+    mark_order_shipped,
+    STATUS_PACKING_PENDING,
+    STATUS_PACKED, 
+    STATUS_SHIPPED,
 )
 
 from config import ADMIN_ID, CHANNEL_ID
