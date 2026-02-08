@@ -7,6 +7,16 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from db import get_db, set_admin_session, get_admin_session, clear_admin_session
 from invoice_pdf import build_invoice_pdf
 
+from db import (
+    STATUS_AWAITING_PAYMENT,
+    STATUS_VERIFYING,
+    STATUS_AWAITING_ADDRESS,
+    STATUS_PACKING_PENDING,
+    STATUS_PACKED,
+    STATUS_SHIPPED,
+)
+
+
 router = Router()
 
 # ===========================
@@ -258,3 +268,78 @@ async def show_my_claims(cb: CallbackQuery):
     text.append("\n🕯️ When you're ready to checkout, type <b>/start</b>.")
     await cb.message.answer("\n".join(text), parse_mode="HTML")
     await cb.answer()
+
+@router.message(F.chat.type == "private", Command("buyerpanel"))
+async def buyer_panel(message: Message):
+    user_id = message.from_user.id
+
+    # 1️⃣ Fetch latest order for this buyer
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                invoice_no,
+                status,
+                tracking_number,
+                shipping_proof_file_id
+            FROM orders
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        order = cur.fetchone()
+
+    # 2️⃣ No order case
+    if not order:
+        await message.answer("🛒 You have no active orders.")
+        return
+
+    invoice = order["invoice_no"]
+    status = order["status"]
+
+    # 3️⃣ Base status message
+    lines = [
+        f"🧾 <b>Invoice:</b> <code>{invoice}</code>",
+        f"📦 <b>Status:</b> {status.replace('_', ' ').title()}",
+    ]
+
+    # 4️⃣ Status-specific rendering
+    if status == STATUS_AWAITING_PAYMENT:
+        lines.append("\n⏳ Awaiting payment.")
+
+    elif status == STATUS_VERIFYING:
+        lines.append("\n🔍 Payment is being verified.")
+
+    elif status == STATUS_AWAITING_ADDRESS:
+        lines.append("\n📮 Please submit your shipping address.")
+
+    elif status == STATUS_PACKING_PENDING:
+        lines.append("\n📦 Your order is being packed.")
+
+    elif status == STATUS_PACKED:
+        lines.append("\n🚚 Your order is ready to ship.")
+
+    elif status == STATUS_SHIPPED:
+        tracking = order["tracking_number"]
+
+        lines.append("\n🚚 <b>Your order has been shipped!</b>")
+        lines.append(f"<b>Tracking Number:</b> <code>{tracking}</code>")
+        lines.append(
+            "<b>Track here:</b>\n"
+            f"https://www.singpost.com/track-items?trackNums={tracking}"
+        )
+
+        # Send text first
+        await message.answer("\n".join(lines), parse_mode="HTML")
+
+        # Send proof photo if exists
+        proof = order["shipping_proof_file_id"]
+        if proof:
+            await message.answer_photo(
+                photo=proof,
+                caption="📦 Proof of shipping"
+            )
+        return
+
+    # 5️⃣ Non-shipped fallback
+    await message.answer("\n".join(lines), parse_mode="HTML")
