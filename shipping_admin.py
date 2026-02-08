@@ -713,7 +713,11 @@ async def generate_packlist(message: Message):
                     [
                         InlineKeyboardButton(
                             text="📦 Mark as Packed",
-                            callback_data=f"pack:{invoice_no}"
+                            callback_data=PackingActionCB(
+                                action="packed",
+                                invoice=invoice_no
+                            ).pack()
+
                         )
                     ]
                 ]
