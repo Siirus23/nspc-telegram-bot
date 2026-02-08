@@ -30,3 +30,9 @@ class PaymentReviewCB(CallbackData, prefix="pay"):
 class ShippingActionCB(CallbackData, prefix="ship"):
     action: str   # start / cancel
     invoice: str
+
+class PackingActionCB(CallbackData, prefix="pack"):
+    action: str   # packed
+    invoice: str
+
+
