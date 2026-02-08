@@ -14,7 +14,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import ADMIN_ID, CHANNEL_ID, CHANNEL_USERNAME
-from db import get_db, set_payment_proof
+# TEMP: SQLite admin session helpers removed during Supabase migration
 from invoice_pdf import build_invoice_pdf
 from callbacks import PaymentReviewCB, ShippingActionCB
 
