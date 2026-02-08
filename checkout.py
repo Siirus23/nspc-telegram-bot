@@ -673,7 +673,7 @@ async def admin_approve(message: Message):
         conn.execute("UPDATE orders SET status = 'verifying' WHERE invoice_no = ?", (invoice_no,))
 
     if delivery_method == "tracked":
-    upsert_checkout(user_id, stage="awaiting_address", invoice_no=invoice_no)
+        upsert_checkout(user_id, stage="awaiting_address", invoice_no=invoice_no)
 
     await message.bot.send_message(
         chat_id=user_id,
