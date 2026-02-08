@@ -91,6 +91,27 @@ async def update_order_status(invoice_no: str, new_status: str):
             invoice_no
         )
 
+async def mark_order_shipped(
+    order_id: int,
+    tracking: str,
+    file_id: str | None = None
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE orders
+            SET status = $1,
+                tracking_number = $2,
+                shipping_proof_file_id = $3
+            WHERE id = $4
+            """,
+            STATUS_SHIPPED,
+            tracking,
+            file_id,
+            order_id
+        )
+
 # ===========================
 # ORDER STATE SHORTCUTS
 # ===========================
