@@ -757,3 +757,140 @@ async def list_pending_payments(message: Message):
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("pending"))
 async def cmd_pending(message: Message):
     await list_pending_payments(message)
+
+# ======================================================
+# TRACKING HANDLERS
+# ======================================================
+
+@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
+async def admin_tracking_photo(message: Message):
+    sess = get_admin_session(ADMIN_ID)
+    if not sess or sess.get("session_type") != "awaiting_tracking":
+        await message.answer("⚠️ No active shipping session.")
+        return
+
+    invoice_no = sess["invoice_no"]
+
+    # 1️⃣ Save proof photo ALWAYS
+    proof_file_id = message.photo[-1].file_id
+    set_shipping_proof(invoice_no, proof_file_id)
+
+    # 2️⃣ OCR attempt
+    text = await extract_text_from_photo(message.bot, message)
+
+    if not text:
+        await message.answer(
+            "⚠️ OCR unavailable.\n"
+            "Please type the tracking number manually."
+        )
+        return
+
+    tracking = extract_tracking_number(text)
+    if not tracking:
+        await message.answer(
+            "❌ Tracking not detected.\n"
+            "Please type the tracking number manually."
+        )
+        return
+
+    # 3️⃣ Pass to text handler
+    message.text = tracking
+    await process_tracking_text(message)
+
+async def process_tracking_text(message: Message) -> bool:
+    sess = get_admin_session(ADMIN_ID)
+    if not sess or sess.get("session_type") != "awaiting_tracking":
+        return False
+
+    invoice_no = sess["invoice_no"]
+
+    match = TRACKING_REGEX.search((message.text or "").upper())
+    if not match:
+        await message.answer("❌ Invalid tracking format.")
+        return True
+
+    tracking = match.group(0)
+
+    with get_db() as conn:
+        # Fetch buyer BEFORE update
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT user_id FROM orders WHERE invoice_no = ?",
+            (invoice_no,)
+        )
+        row = cur.fetchone()
+
+        # Single source of truth
+        mark_order_shipped(
+            conn,
+            invoice_no=invoice_no,
+            tracking_number=tracking,
+            proof_file_id=get_shipping_proof(invoice_no)
+        )
+
+    clear_admin_session(ADMIN_ID)
+
+    await message.answer(
+        f"✅ Tracking saved for <code>{invoice_no}</code>",
+        parse_mode="HTML"
+    )
+
+    # Notify buyer
+    if row:
+        user_id = row["user_id"]
+
+        proof_file_id = get_shipping_proof(invoice_no)
+        if proof_file_id:
+            try:
+                await message.bot.send_photo(
+                    chat_id=user_id,
+                    photo=proof_file_id,
+                    caption="📦 Proof of shipping"
+                )
+            except Exception:
+                pass
+
+        await message.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "📦 <b>Your order has been shipped!</b>\n\n"
+                f"<b>Invoice:</b> {invoice_no}\n"
+                f"<b>Tracking:</b> {tracking}\n\n"
+                "📍 Track here:\n"
+                f"https://www.singpost.com/track-items?trackNums={tracking}"
+            ),
+            parse_mode="HTML"
+        )
+
+    return True
+
+async def process_manual_tracking_invoice_text(message: Message) -> bool:
+    sess = get_admin_session(ADMIN_ID)
+    if not sess or sess.get("session_type") != "awaiting_tracking_invoice":
+        return False
+
+    inv = (message.text or "").strip().upper()
+    if not INVOICE_REGEX.match(inv):
+        await message.answer("❌ Invalid invoice format.")
+        return True
+
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT status FROM orders WHERE invoice_no = ?",
+            (inv,)
+        )
+        row = cur.fetchone()
+
+    if not row or row["status"] != STATUS_PACKED:
+        await message.answer("⚠️ Invoice not READY TO SHIP.")
+        return True
+
+    set_admin_session(ADMIN_ID, "awaiting_tracking", inv)
+    await message.answer(
+        f"✅ Invoice locked: <code>{inv}</code>\n\nSend tracking now.",
+        parse_mode="HTML"
+    )
+    return True
+
+
