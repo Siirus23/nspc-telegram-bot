@@ -665,32 +665,38 @@ async def list_orders_ready(message: Message):
 # PACKING LIST
 # ===========================
 
-@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("packlist"))
+@router.message(
+    F.chat.type == "private",
+    F.from_user.id == ADMIN_ID,
+    Command("packlist")
+)
 async def generate_packlist(message: Message):
     with get_db() as conn:
         cur = conn.cursor()
 
+        # 1️⃣ Fetch orders pending packing
         cur.execute("""
             SELECT id, invoice_no, username
             FROM orders
-            WHERE status = 'ready_to_ship'
+            WHERE status = ?
             ORDER BY created_at ASC
-        """)
+        """, (STATUS_PACKING_PENDING,))
         orders = cur.fetchall()
 
         if not orders:
             await message.answer("📦 No orders currently ready to pack.")
             return
 
-        text = "📦 <b>Orders Ready To Pack</b>\n\n"
-
+        # 2️⃣ Send one message PER order
         for order in orders:
             order_id = order["id"]
             invoice_no = order["invoice_no"]
             username = order["username"] or "Unknown"
 
-            text += f"<b>{invoice_no}</b> – @{username}\n"
+            text = f"📦 <b>Order to Pack</b>\n\n"
+            text += f"<b>{invoice_no}</b> – @{username}\n\n"
 
+            # 3️⃣ Fetch items for this order
             cur.execute("""
                 SELECT card_name, qty
                 FROM order_items
@@ -701,9 +707,25 @@ async def generate_packlist(message: Message):
             for item in items:
                 text += f"- {item['card_name']} (x{item['qty']})\n"
 
-            text += "\n"
+            # 4️⃣ Inline keyboard for THIS order
+            kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="📦 Mark as Packed",
+                            callback_data=f"pack:{invoice_no}"
+                        )
+                    ]
+                ]
+            )
 
-    await message.answer(text, parse_mode="HTML")
+            # 5️⃣ Send message + button
+            await message.answer(
+                text,
+                parse_mode="HTML",
+                reply_markup=kb
+            )
+
 
 
 # ===========================
