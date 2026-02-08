@@ -1,6 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import Message
-from db import get_admin_session
+# TEMP: SQLite admin session helpers removed during Supabase migration
+
 
 from config import ADMIN_ID
 import checkout
