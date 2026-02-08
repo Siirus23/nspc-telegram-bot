@@ -5,7 +5,7 @@ import asyncio
 import csv
 import io
 
-from db import get_db, set_admin_session, get_admin_session, clear_admin_session
+# TEMP: admin DB helpers removed during Supabase migration
 from config import ADMIN_ID, CHANNEL_ID
 
 router = Router()
