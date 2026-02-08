@@ -48,33 +48,35 @@ async def setup_bot_commands(bot: Bot):
 
 
 async def main():
-    print("ð¹ Initializing database...")
-    init_db()
+    # 1️⃣ Initialize Supabase connection
+    await init_db()
 
+    # 2️⃣ Create bot
     bot = Bot(token=BOT_TOKEN)
     print("BOT USERNAME:", (await bot.get_me()).username)
 
-    # Register Telegram menu commands (buyers vs admin)
-    await setup_bot_commands(bot)
-
+    # 3️⃣ Setup dispatcher
     dp = Dispatcher()
 
-    # Routers
+    # 4️⃣ Register routers
     dp.include_router(admin.router)           # CSV + photos
     dp.include_router(shipping_admin.router)  # admin panel + shipping
     dp.include_router(claims.router)          # claim/cancel in channel threads
     dp.include_router(checkout.router)        # checkout / payment proof / address flow
     dp.include_router(buyer_panel.router)     # buyer panel buttons
-
     dp.include_router(text_dispatcher.router) # generic private chat text dispatcher
 
-    print("ð¹ Bot is ready. Listening for events...")
+    # 5️⃣ Register Telegram menu commands
+    await setup_bot_commands(bot)
 
+    print("🔹 Bot is ready. Listening for events...")
+
+    # 6️⃣ Start polling
     try:
         await dp.start_polling(bot)
     finally:
         await bot.session.close()
-        print("ð¹ Bot session closed.")
+        print("🔹 Bot session closed.")
 
 
 if __name__ == "__main__":
