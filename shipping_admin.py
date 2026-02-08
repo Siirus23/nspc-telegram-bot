@@ -808,6 +808,48 @@ async def show_orders_ready_to_ship(message: Message):
                 reply_markup=kb
             )
 
+# ===========================
+# SHIPPING LABEL PHOTO (STEP 3C)
+# ===========================
+
+@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
+async def admin_shipping_photo(message: Message):
+    # 1️⃣ Check active shipping session
+    sess = get_admin_session(ADMIN_ID)
+    if not sess or sess.get("session_type") != "awaiting_tracking":
+        await message.answer("⚠️ No active shipping session.")
+        return
+
+    invoice_no = sess.get("invoice_no")
+
+    # 2️⃣ Save proof-of-shipping photo
+    proof_file_id = message.photo[-1].file_id
+    set_shipping_proof(invoice_no, proof_file_id)
+
+    # 3️⃣ OCR the image
+    text = await extract_text_from_photo(message.bot, message)
+
+    if not text:
+        await message.answer(
+            "⚠️ Could not read text from image.\n\n"
+            "Please type the tracking number manually (e.g. RR123456789SG)."
+        )
+        return
+
+    # 4️⃣ Extract tracking number from OCR text
+    tracking = extract_tracking_number(text)
+
+    if not tracking:
+        await message.answer(
+            "❌ Tracking number not detected.\n\n"
+            "Please type the tracking number manually (e.g. RR123456789SG)."
+        )
+        return
+
+    # 5️⃣ Autofill tracking into text handler
+    message.text = tracking
+    await process_tracking_text(message)
+
 
 # ===========================
 # START SHIPPING SESSION
