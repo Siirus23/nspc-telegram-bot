@@ -334,7 +334,7 @@ async def set_session(
             user_id,
             role,
             session_type,
-            Json(data or {}),
+            json.dumps(data or {}),
         )
 
 
