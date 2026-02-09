@@ -300,3 +300,65 @@ async def get_active_claims_by_user(user_id: int):
             user_id
         )
 
+# ===========================
+# BOT SESSION HELPERS
+# ===========================
+
+async def set_session(
+    user_id: int,
+    role: str,
+    session_type: str,
+    data: dict | None = None,
+):
+    """
+    Create or replace a session for a user.
+    One active session per user (enforced by PRIMARY KEY).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO bot_sessions (user_id, role, session_type, data, updated_at)
+            VALUES ($1, $2, $3, $4, NOW())
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                role = EXCLUDED.role,
+                session_type = EXCLUDED.session_type,
+                data = EXCLUDED.data,
+                updated_at = NOW()
+            """,
+            user_id,
+            role,
+            session_type,
+            data or {},
+        )
+
+
+async def get_session(user_id: int):
+    """
+    Fetch the active session for a user.
+    Returns None if no session exists.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT user_id, role, session_type, data
+            FROM bot_sessions
+            WHERE user_id = $1
+            """,
+            user_id,
+        )
+
+
+async def clear_session(user_id: int):
+    """
+    Clear the active session for a user.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM bot_sessions WHERE user_id = $1",
+            user_id,
+        )
+
