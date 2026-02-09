@@ -9,6 +9,11 @@ from db import (
     clear_card_listings,
     insert_card_listing,
     start_csv_photo_session,
+    get_csv_photo_session,
+    get_next_unposted_card,
+    mark_card_posted,
+    count_unposted_cards,
+    clear_session,
 )
 
 from config import ADMIN_ID, CHANNEL_ID
@@ -94,10 +99,10 @@ photo_buffer = {}
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
 async def collect_card_photos(message: Message):
 
-    sess = get_admin_session(ADMIN_ID)
-
-    if not sess or sess.get("session_type") != "awaiting_card_photos":
+    sess = await get_csv_photo_session(ADMIN_ID)
+    if not sess:
         return
+
 
     uid = message.from_user.id
 
@@ -129,26 +134,21 @@ async def process_card_upload(messages):
     if not sess or sess.get("session_type") != "awaiting_card_photos":
         return
 
-    with get_db() as conn:
-        cur = conn.cursor()
+async def process_card_upload(messages):
 
-        cur.execute("""
-            SELECT id, card_name, price, remaining_qty
-            FROM card_listing
-            WHERE channel_message_id = 0
-            ORDER BY id ASC
-            LIMIT 1
-        """)
-        card = cur.fetchone()
+    sess = await get_csv_photo_session(ADMIN_ID)
+    if not sess:
+        return
 
-        if not card:
-            clear_admin_session(ADMIN_ID)
-            return
+    card = await get_next_unposted_card()
+    if not card:
+        await clear_session(ADMIN_ID)
+        return
 
-        card_id = card["id"]
-        name = card["card_name"]
-        price = card["price"]
-        qty = card["remaining_qty"]
+    card_id = card["id"]
+    name = card["card_name"]
+    price = card["price"]
+    qty = card["remaining_qty"]
 
     caption = f"{name}\nPrice: {price}\nAvailable: {qty}"
 
@@ -166,36 +166,26 @@ async def process_card_upload(messages):
                 InputMediaPhoto(media=m.photo[-1].file_id)
                 for m in messages
             ]
-
             media[0].caption = caption
 
             sent_msgs = await messages[0].bot.send_media_group(
                 chat_id=CHANNEL_ID,
                 media=media
             )
-
             sent = sent_msgs[0]
 
     except Exception as e:
         print("CHANNEL POST ERROR:", e)
         return
 
-    with get_db() as conn:
-        conn.execute("""
-            UPDATE card_listing
-            SET channel_chat_id = ?,
-                channel_message_id = ?
-            WHERE id = ?
-        """, (CHANNEL_ID, sent.message_id, card_id))
+    # ✅ Update Supabase with channel message info
+    await mark_card_posted(
+        card_id=card_id,
+        channel_chat_id=CHANNEL_ID,
+        channel_message_id=sent.message_id,
+    )
 
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*) as c
-            FROM card_listing
-            WHERE channel_message_id = 0
-        """)
-        remaining = cur.fetchone()["c"]
+    remaining = await count_unposted_cards()
 
     if remaining > 0:
         await messages[0].answer(
@@ -204,22 +194,18 @@ async def process_card_upload(messages):
         )
     else:
         await messages[0].answer("🎉 All cards posted to channel successfully!")
-        clear_admin_session(ADMIN_ID)
+        await clear_session(ADMIN_ID)
 
         post_sale_message = (
             "📮 <b>NightShade Poké Claims – Post Sale Procedure</b> 📮\n\n"
-
             "<b>How It Works:</b>\n"
             "🚀 Type <b>/start</b> on @NSPCbot\n"
             "👉 Follow the bot instructions step by step\n\n"
-
             "<b>Questions?</b>\n"
             "💌 DM Admin at @ILoveCatFoochie\n\n"
-
             "Thank you again for being part of today’s claim sale! ❤️\n"
             "Looking forward to seeing you again at the next one! 🙌"
         )
-
 
         try:
             await messages[0].bot.send_message(
