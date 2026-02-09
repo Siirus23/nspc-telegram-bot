@@ -183,3 +183,29 @@ async def handle_claim_and_cancel(message: Message):
             f"Restored: {total_to_cancel}\n"
             f"Available: {new_remaining}"
         )
+
+
+    # =========================
+    # AUTO-EDIT CAPTION
+    # =========================
+    if new_remaining <= 0:
+        caption = (
+            f"{card_name}\n"
+            f"Price: {price}\n"
+            f"❌ SOLD OUT"
+        )
+    else:
+        caption = (
+            f"{card_name}\n"
+            f"Price: {price}\n"
+            f"Available: {new_remaining}"
+        )
+    
+    try:
+        await message.bot.edit_message_caption(
+            chat_id=channel_chat_id,
+            message_id=channel_message_id,
+            caption=caption
+        )
+    except Exception as e:
+        print("Caption edit failed:", e)
