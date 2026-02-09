@@ -127,7 +127,7 @@ def format_claim_summary(items):
     for i, it in enumerate(items, start=1):
         card = it["card_name"]
         qty = int(it["qty"])
-        price = float(it["price"])
+        price = parse_price_to_float(it["price"])
         total += price * qty
 
         if qty == 1:
