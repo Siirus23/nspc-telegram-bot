@@ -231,22 +231,7 @@ async def edit_address_start(cb: CallbackQuery):
 async def show_my_claims(cb: CallbackQuery):
     user_id = cb.from_user.id
 
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT cl.card_name, cl.price, cl.channel_message_id
-            FROM claims c
-            JOIN card_listing cl
-              ON c.channel_chat_id = cl.channel_chat_id
-             AND c.channel_message_id = cl.channel_message_id
-            WHERE c.user_id = ?
-              AND c.status = 'active'
-            ORDER BY c.claim_order ASC
-            """,
-            (user_id,),
-        )
-        rows = cur.fetchall()
+    rows = await get_active_claims_by_user(user_id)
 
     if not rows:
         await cb.message.answer("🕸️ You have no active claims right now.")
@@ -256,88 +241,12 @@ async def show_my_claims(cb: CallbackQuery):
     text = ["🎴 <b>Your Active Claims</b>\n"]
 
     for r in rows:
-        # Price is stored as string sometimes; show raw
-        price = r["price"]
-        text.append(f"• {r['card_name']} — {price}")
+        text.append(f"• {r['card_name']} — {r['price']}")
 
     text.append("\n🕯️ When you're ready to checkout, type <b>/start</b>.")
     await cb.message.answer("\n".join(text), parse_mode="HTML")
     await cb.answer()
 
-@router.message(F.chat.type == "private", Command("buyerpanel"))
-async def buyer_panel(message: Message):
-    user_id = message.from_user.id
-
-    # 1️⃣ Fetch latest order for this buyer
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT
-                invoice_no,
-                status,
-                tracking_number,
-                shipping_proof_file_id
-            FROM orders
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, (user_id,))
-        order = cur.fetchone()
-
-    # 2️⃣ No order case
-    if not order:
-        await message.answer("🛒 You have no active orders.")
-        return
-
-    invoice = order["invoice_no"]
-    status = order["status"]
-
-    # 3️⃣ Base status message
-    lines = [
-        f"🧾 <b>Invoice:</b> <code>{invoice}</code>",
-        f"📦 <b>Status:</b> {status.replace('_', ' ').title()}",
-    ]
-
-    # 4️⃣ Status-specific rendering
-    if status == STATUS_AWAITING_PAYMENT:
-        lines.append("\n⏳ Awaiting payment.")
-
-    elif status == STATUS_VERIFYING:
-        lines.append("\n🔍 Payment is being verified.")
-
-    elif status == STATUS_AWAITING_ADDRESS:
-        lines.append("\n📮 Please submit your shipping address.")
-
-    elif status == STATUS_PACKING_PENDING:
-        lines.append("\n📦 Your order is being packed.")
-
-    elif status == STATUS_PACKED:
-        lines.append("\n🚚 Your order is ready to ship.")
-
-    elif status == STATUS_SHIPPED:
-        tracking = order["tracking_number"]
-
-        lines.append("\n🚚 <b>Your order has been shipped!</b>")
-        lines.append(f"<b>Tracking Number:</b> <code>{tracking}</code>")
-        lines.append(
-            "<b>Track here:</b>\n"
-            f"https://www.singpost.com/track-items?trackNums={tracking}"
-        )
-
-        # Send text first
-        await message.answer("\n".join(lines), parse_mode="HTML")
-
-        # Send proof photo if exists
-        proof = order["shipping_proof_file_id"]
-        if proof:
-            await message.answer_photo(
-                photo=proof,
-                caption="📦 Proof of shipping"
-            )
-        return
-
-    # 5️⃣ Non-shipped fallback
-    await message.answer("\n".join(lines), parse_mode="HTML")
 
 @router.callback_query(F.data == "buyer:status")
 async def show_latest_order_status(cb: CallbackQuery):
