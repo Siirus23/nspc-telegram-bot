@@ -156,6 +156,64 @@ async def list_pending_payments(message: Message):
         else:
             await message.answer(caption, parse_mode="HTML", reply_markup=kb.as_markup())
 
+@router.callback_query(PaymentReviewCB.filter(F.action == "approve"))
+async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReviewCB):
+    invoice_no = callback_data.invoice
+
+    with get_db() as conn:
+        order = conn.execute("""
+            SELECT user_id, delivery_method
+            FROM orders
+            WHERE invoice_no = ?
+              AND status = 'payment_received'
+        """, (invoice_no,)).fetchone()
+
+        if not order:
+            await cb.answer("❌ Order already handled or not found.", show_alert=True)
+            return
+
+        user_id = order["user_id"]
+        delivery_method = order["delivery_method"]
+
+        # Lock order
+        conn.execute("""
+            UPDATE orders
+            SET status = 'paid'
+            WHERE invoice_no = ?
+        """, (invoice_no,))
+
+    await cb.answer("✅ Payment approved")
+
+    # 🔀 SINGLE SOURCE OF TRUTH
+    if delivery_method == "tracked":
+        upsert_checkout(user_id, stage="awaiting_address")
+
+        await cb.bot.send_message(
+            user_id,
+            "✅ <b>Payment verified!</b>\n\n"
+            "📦 Please send your shipping address using this template:\n\n"
+            f"<code>{address_template()}</code>",
+            parse_mode="HTML"
+        )
+
+    else:  # self collection
+        upsert_checkout(user_id, stage="packing")
+
+        await cb.bot.send_message(
+            user_id,
+            "✅ <b>Payment verified!</b>\n\n"
+            "🏠 This order is marked for <b>self collection</b>.\n"
+            "Admin will contact you to arrange pickup.",
+            parse_mode="HTML"
+        )
+
+        await cb.bot.send_message(
+            ADMIN_ID,
+            f"📦 <b>Order ready to pack</b>\n\nInvoice: <code>{invoice_no}</code>",
+            parse_mode="HTML"
+        )
+
+
 # ======================================================
 # PACKING LIST
 # ======================================================
@@ -673,6 +731,74 @@ async def process_cancel_claims_text(message: Message) -> bool:
         return True
 
     return False
+
+@router.callback_query(PaymentReviewCB.filter(F.action == "approve"))
+async def approve_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
+    invoice_no = callback_data.invoice
+
+    with get_db() as conn:
+        # Fetch order
+        order = conn.execute("""
+            SELECT user_id, delivery_method
+            FROM orders
+            WHERE invoice_no = ?
+              AND status = 'payment_received'
+        """, (invoice_no,)).fetchone()
+
+        if not order:
+            await cb.answer("❌ Order not found or already processed.", show_alert=True)
+            return
+
+        user_id = order["user_id"]
+        delivery_method = order["delivery_method"]
+
+        # Lock order as paid
+        conn.execute("""
+            UPDATE orders
+            SET status = 'paid'
+            WHERE invoice_no = ?
+        """, (invoice_no,))
+
+    await cb.answer("✅ Payment approved")
+
+    # 🔀 THIS IS THE MISSING FORK
+    if delivery_method == "tracked":
+        upsert_checkout(
+            user_id,
+            stage="awaiting_address"
+        )
+
+        await cb.bot.send_message(
+            user_id,
+            "✅ <b>Payment verified!</b>\n\n"
+            "📦 Please send your shipping address using the template below:\n\n"
+            f"<code>{address_template()}</code>",
+            parse_mode="HTML"
+        )
+
+    else:  # self collection
+        upsert_checkout(
+            user_id,
+            stage="packing"
+        )
+
+        await cb.bot.send_message(
+            user_id,
+            "✅ <b>Payment verified!</b>\n\n"
+            "🏠 This order is marked for <b>self collection</b>.\n"
+            "Admin will contact you to arrange pickup.",
+            parse_mode="HTML"
+        )
+
+        # Notify admin immediately
+        await cb.bot.send_message(
+            ADMIN_ID,
+            f"📦 <b>Order ready to pack</b>\n\nInvoice: <code>{invoice_no}</code>",
+            parse_mode="HTML"
+        )
+
+
+
 async def list_pending_payments(message: Message):
     with get_db() as conn:
         cur = conn.cursor()
