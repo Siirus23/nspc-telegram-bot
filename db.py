@@ -365,4 +365,108 @@ async def clear_session(user_id: int):
             "DELETE FROM bot_sessions WHERE user_id = $1",
             user_id,
         )
+# ===========================
+# ADMIN CSV SESSIONS
+# ===========================
+
+async def start_csv_photo_session(admin_id: int):
+    await set_session(
+        user_id=admin_id,
+        role="admin",
+        session_type="awaiting_card_photos",
+        data={},
+    )
+
+
+async def get_csv_photo_session(admin_id: int):
+    sess = await get_session(admin_id)
+    if not sess:
+        return None
+    if sess["role"] != "admin":
+        return None
+    if sess["session_type"] != "awaiting_card_photos":
+        return None
+    return sess
+
+
+# ===========================
+# ADMIN CSV / CARD LISTING HELPERS
+# ===========================
+
+async def clear_card_listings():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM card_listing")
+
+
+async def insert_card_listing(
+    card_name: str,
+    price: str,
+    qty: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO card_listing (
+                channel_chat_id,
+                channel_message_id,
+                card_name,
+                price,
+                initial_qty,
+                remaining_qty
+            )
+            VALUES (0, 0, $1, $2, $3, $3)
+            """,
+            card_name,
+            price,
+            qty,
+        )
+
+
+async def get_next_unposted_card():
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT id, card_name, price, remaining_qty
+            FROM card_listing
+            WHERE channel_message_id = 0
+            ORDER BY id ASC
+            LIMIT 1
+            """
+        )
+
+
+async def mark_card_posted(
+    card_id: int,
+    channel_chat_id: int,
+    channel_message_id: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE card_listing
+            SET channel_chat_id = $1,
+                channel_message_id = $2
+            WHERE id = $3
+            """,
+            channel_chat_id,
+            channel_message_id,
+            card_id,
+        )
+
+
+async def count_unposted_cards() -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS c
+            FROM card_listing
+            WHERE channel_message_id = 0
+            """
+        )
+        return int(row["c"] or 0)
 
