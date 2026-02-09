@@ -5,7 +5,12 @@ import asyncio
 import csv
 import io
 
-# TEMP: admin DB helpers removed during Supabase migration
+from db import (
+    clear_card_listings,
+    insert_card_listing,
+    start_csv_photo_session,
+)
+
 from config import ADMIN_ID, CHANNEL_ID
 
 router = Router()
@@ -48,29 +53,23 @@ async def handle_csv_upload(message: Message):
             )
             return
 
-        # Start photo upload session
-        set_admin_session(
-            ADMIN_ID,
-            session_type="awaiting_card_photos",
-            invoice_no="csv_upload"
-        )
+        # ✅ Start Supabase admin photo session
+        await start_csv_photo_session(ADMIN_ID)
 
-        with get_db() as conn:
-            cur = conn.cursor()
+        # ✅ Clear previous listings
+        await clear_card_listings()
 
-            # Clear previous listings
-            cur.execute("DELETE FROM card_listing")
+        # ✅ Insert CSV rows into Supabase
+        for row in rows:
+            name = row["name"].strip()
+            price = row["price"].strip()
+            qty = int(row["availability"])
 
-            for row in rows:
-                name = row["name"].strip()
-                price = row["price"].strip()
-                qty = int(row["availability"])
-
-                cur.execute("""
-                    INSERT INTO card_listing
-                    (channel_chat_id, channel_message_id, card_name, price, initial_qty, remaining_qty)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (0, 0, name, price, qty, qty))
+            await insert_card_listing(
+                card_name=name,
+                price=price,
+                qty=qty,
+            )
 
         await message.answer(
             "✅ CSV processed successfully.\n\n"
@@ -80,6 +79,9 @@ async def handle_csv_upload(message: Message):
     except Exception as e:
         print("CSV PROCESS ERROR:", e)
         await message.answer(f"❌ Error processing CSV: {str(e)}")
+
+
+        
 
 
 # ==========================================================
