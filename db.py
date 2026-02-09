@@ -72,11 +72,12 @@ async def get_stale_claims_for_user(user_id: int, hours: int):
             FROM claims
             WHERE user_id = $1
               AND status = 'active'
-              AND claimed_at < (now() - ($2 || ' hours')::interval)
+              AND claimed_at < (now() - make_interval(hours => $2))
             """,
             user_id,
             hours
         )
+
 
 
 async def cancel_all_claims_for_user(user_id: int):
