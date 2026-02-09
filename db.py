@@ -1,6 +1,8 @@
 import asyncpg
 import os
 
+from asyncpg.types import Json
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 _pool = None
@@ -330,7 +332,7 @@ async def set_session(
             user_id,
             role,
             session_type,
-            data or {},
+            Json(data or {}),
         )
 
 
