@@ -242,3 +242,61 @@ async def get_active_shipping_session_by_admin(admin_id: int):
             admin_id
         )
 
+# ===========================
+# BUYER PANEL HELPERS
+# ===========================
+
+async def get_orders_by_user(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                invoice_no,
+                status,
+                tracking_number,
+                created_at
+            FROM orders
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            """,
+            user_id
+        )
+async def get_latest_order_by_user(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT
+                invoice_no,
+                status,
+                tracking_number,
+                shipping_proof_file_id
+            FROM orders
+            WHERE user_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            user_id
+        )
+
+async def get_active_claims_by_user(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                cl.card_name,
+                cl.price,
+                c.channel_message_id
+            FROM claims c
+            JOIN card_listing cl
+              ON c.channel_chat_id = cl.channel_chat_id
+             AND c.channel_message_id = cl.channel_message_id
+            WHERE c.user_id = $1
+              AND c.status = 'active'
+            ORDER BY c.claim_order ASC
+            """,
+            user_id
+        )
+
