@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from db import (
     get_stale_claims_for_user,
     cancel_all_claims_for_user,
+    get_user_claims_summary,
 )
 
 
@@ -319,7 +320,7 @@ async def dm_start(message: Message):
     # ============================
     # EXISTING LOGIC (unchanged)
     # ============================
-    items = get_user_claims_summary(user_id)
+    items = await get_user_claims_summary(user_id)
 
     if not items:
         upsert_checkout(user_id, stage="idle")
