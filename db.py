@@ -50,13 +50,15 @@ async def init_db():
         raise RuntimeError("DATABASE_URL environment variable is not set")
 
     if _pool is None:
-        _pool = await asyncpg.create_pool(
+       _pool = await asyncpg.create_pool(
             DATABASE_URL,
             min_size=1,
             max_size=3,
             ssl="require",
             timeout=30,
+            statement_cache_size=0,  # 🔑 REQUIRED for Supabase + pgbouncer
         )
+
 
 async def get_pool():
     """
