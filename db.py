@@ -470,3 +470,216 @@ async def count_unposted_cards() -> int:
         )
         return int(row["c"] or 0)
 
+# ===========================
+# CLAIMS — CARD LOOKUP
+# ===========================
+
+async def get_card_by_post(channel_chat_id: int, channel_message_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT id, card_name, price, remaining_qty
+            FROM card_listing
+            WHERE channel_chat_id = $1
+              AND channel_message_id = $2
+            """,
+            channel_chat_id,
+            channel_message_id,
+        )
+
+# ===========================
+# CLAIMS — COUNT HELPERS
+# ===========================
+
+async def count_active_claims_for_card(
+    channel_chat_id: int,
+    channel_message_id: int,
+) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*) AS c
+            FROM claims
+            WHERE channel_chat_id = $1
+              AND channel_message_id = $2
+              AND status = 'active'
+            """,
+            channel_chat_id,
+            channel_message_id,
+        )
+        return int(row["c"] or 0)
+
+
+async def user_has_active_claim(
+    channel_chat_id: int,
+    channel_message_id: int,
+    user_id: int,
+) -> bool:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT 1
+            FROM claims
+            WHERE channel_chat_id = $1
+              AND channel_message_id = $2
+              AND user_id = $3
+              AND status = 'active'
+            LIMIT 1
+            """,
+            channel_chat_id,
+            channel_message_id,
+            user_id,
+        )
+        return row is not None
+
+# ===========================
+# CLAIMS — CREATE / REVIVE
+# ===========================
+
+async def get_latest_cancelled_claim_id(
+    channel_chat_id: int,
+    channel_message_id: int,
+    user_id: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id
+            FROM claims
+            WHERE channel_chat_id = $1
+              AND channel_message_id = $2
+              AND user_id = $3
+              AND status = 'cancelled'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            channel_chat_id,
+            channel_message_id,
+            user_id,
+        )
+        return row["id"] if row else None
+
+
+async def revive_cancelled_claim(
+    claim_id: int,
+    username: str | None,
+    claim_order: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE claims
+            SET status = 'active',
+                username = $1,
+                claim_order = $2,
+                claimed_at = NOW()
+            WHERE id = $3
+            """,
+            username,
+            claim_order,
+            claim_id,
+        )
+
+
+async def create_claim(
+    channel_chat_id: int,
+    channel_message_id: int,
+    user_id: int,
+    username: str | None,
+    claim_order: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO claims (
+                channel_chat_id,
+                channel_message_id,
+                user_id,
+                username,
+                claim_order
+            )
+            VALUES ($1, $2, $3, $4, $5)
+            """,
+            channel_chat_id,
+            channel_message_id,
+            user_id,
+            username,
+            claim_order,
+        )
+
+# ===========================
+# CLAIMS — CANCEL
+# ===========================
+
+async def get_active_claims_for_user(
+    channel_chat_id: int,
+    channel_message_id: int,
+    user_id: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT id, claimed_at
+            FROM claims
+            WHERE channel_chat_id = $1
+              AND channel_message_id = $2
+              AND user_id = $3
+              AND status = 'active'
+            """,
+            channel_chat_id,
+            channel_message_id,
+            user_id,
+        )
+
+
+async def cancel_claims_for_user(
+    channel_chat_id: int,
+    channel_message_id: int,
+    user_id: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE claims
+            SET status = 'cancelled'
+            WHERE channel_chat_id = $1
+              AND channel_message_id = $2
+              AND user_id = $3
+              AND status = 'active'
+            """,
+            channel_chat_id,
+            channel_message_id,
+            user_id,
+        )
+
+# ===========================
+# CLAIMS — AVAILABILITY
+# ===========================
+
+async def update_card_remaining(
+    channel_chat_id: int,
+    channel_message_id: int,
+    delta: int,
+):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE card_listing
+            SET remaining_qty = remaining_qty + $1
+            WHERE channel_chat_id = $2
+              AND channel_message_id = $3
+            """,
+            delta,
+            channel_chat_id,
+            channel_message_id,
+        )
+
