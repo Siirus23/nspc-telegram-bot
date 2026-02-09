@@ -2,7 +2,15 @@ from aiogram import Router, F
 from aiogram.types import Message
 from datetime import datetime, timedelta
 
-# TEMP: SQLite admin session helpers removed during Supabase migration
+from db import (
+    get_card_by_post,
+    count_active_claims_for_card,
+    user_has_active_claim,
+    get_latest_cancelled_claim_id,
+    revive_cancelled_claim,
+    create_claim,
+    update_card_remaining,
+)
 
 from config import CHANNEL_ID, ADMIN_ID
 
@@ -39,8 +47,8 @@ async def handle_claim_and_cancel(message: Message):
     parts = raw.split()
     action = parts[0] if parts else ""
 
-    if action not in {"claim", "cancel"}:
-        return
+    if action != "claim":
+        return  # 🚫 cancel not migrated yet
 
     key = resolve_channel_post_keys(message)
     if not key:
@@ -50,193 +58,89 @@ async def handle_claim_and_cancel(message: Message):
     if channel_chat_id != CHANNEL_ID:
         return
 
-    with get_db() as conn:
-        cur = conn.cursor()
-        conn.execute("BEGIN IMMEDIATE")
+    # 🔹 Fetch card info (Supabase)
+    card = await get_card_by_post(channel_chat_id, channel_message_id)
+    if not card:
+        await message.reply("❌ This post is not a tracked card.")
+        return
 
-        # Fetch card info
-        cur.execute("""
-            SELECT card_name, price, remaining_qty
-            FROM card_listing
-            WHERE channel_chat_id = ?
-              AND channel_message_id = ?
-        """, (channel_chat_id, channel_message_id))
-        card = cur.fetchone()
+    card_name = card["card_name"]
+    price = card["price"]
+    remaining = card["remaining_qty"]
 
-        if not card:
-            await message.reply("❌ This post is not a tracked card.")
+    # =========================
+    # CLAIM
+    # =========================
+    qty = 1
+
+    if len(parts) > 1 and parts[1] == "all":
+        qty = remaining
+    elif len(parts) > 1:
+        if parts[1].isdigit():
+            qty = int(parts[1])
+        else:
+            await message.reply("❌ Invalid format. Use: 'claim', 'claim 2', or 'claim all'")
             return
 
-        card_name, price, remaining = card
+    if qty <= 0:
+        await message.reply("❌ Nothing available to claim.")
+        return
 
-        # =========================
-        # CLAIM
-        # =========================
-        if action == "claim":
-            qty = 1
+    if remaining <= 0:
+        await message.reply("❌ Card is Fully Claimed")
+        return
 
-            if len(parts) > 1 and parts[1] == "all":
-                qty = remaining
-            elif len(parts) > 1:
-                if parts[1].isdigit():
-                    qty = int(parts[1])
-                else:
-                    await message.reply("❌ Invalid format. Use: 'claim', 'claim 2', or 'claim all'")
-                    return
+    if qty > remaining:
+        await message.reply(f"❌ Only {remaining} remaining. You cannot claim {qty}.")
+        return
 
-            if qty <= 0:
-                await message.reply("❌ Nothing available to claim.")
-                return
-
-            if remaining <= 0:
-                await message.reply("❌ Card is Fully Claimed")
-                return
-
-            if qty > remaining:
-                await message.reply(f"❌ Only {remaining} remaining. You cannot claim {qty}.")
-                return
-
-            # Prevent multiple separate claims
-            cur.execute("""
-                SELECT COUNT(*) AS c FROM claims
-                WHERE channel_chat_id = ?
-                  AND channel_message_id = ?
-                  AND user_id = ?
-                  AND status = 'active'
-            """, (channel_chat_id, channel_message_id, message.from_user.id))
-            existing_active = cur.fetchone()["c"]
-
-            if existing_active > 0:
-                await message.reply("❌ You already have active claim(s) on this card. To edit claim, type cancel and claim again.")
-                return
-
-            # Create claims (multiple rows)
-            for _ in range(qty):
-                cur.execute("""
-                    SELECT COUNT(*) AS c FROM claims
-                    WHERE channel_chat_id = ?
-                      AND channel_message_id = ?
-                      AND status = 'active'
-                """, (channel_chat_id, channel_message_id))
-                claim_order = cur.fetchone()["c"] + 1
-
-                cur.execute("""
-                    SELECT id FROM claims
-                    WHERE channel_chat_id = ?
-                      AND channel_message_id = ?
-                      AND user_id = ?
-                      AND status = 'cancelled'
-                    ORDER BY id DESC
-                    LIMIT 1
-                """, (channel_chat_id, channel_message_id, message.from_user.id))
-                cancelled_row = cur.fetchone()
-
-                if cancelled_row:
-                    claim_id = cancelled_row["id"]
-                    cur.execute("""
-                        UPDATE claims
-                        SET status = 'active',
-                            username = ?,
-                            claim_order = ?,
-                            claimed_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                    """, (message.from_user.username, claim_order, claim_id))
-                else:
-                    cur.execute("""
-                        INSERT INTO claims
-                        (channel_chat_id, channel_message_id, user_id, username, claim_order)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (
-                        channel_chat_id,
-                        channel_message_id,
-                        message.from_user.id,
-                        message.from_user.username,
-                        claim_order
-                    ))
-
-            cur.execute("""
-                UPDATE card_listing
-                SET remaining_qty = remaining_qty - ?
-                WHERE channel_chat_id = ?
-                  AND channel_message_id = ?
-            """, (qty, channel_chat_id, channel_message_id))
-
-            new_remaining = remaining - qty
-
-            await message.reply(
-                f"✅ Claim Approved @{message.from_user.username or 'user'}\n"
-                f"Quantity: {qty}\n"
-                f"Remaining: {new_remaining}"
-            )
-
-        # =========================
-        # CANCEL (cancel ALL owned claims)
-        # =========================
-        else:
-            cur.execute("""
-                SELECT id, claimed_at
-                FROM claims
-                WHERE channel_chat_id = ?
-                  AND channel_message_id = ?
-                  AND user_id = ?
-                  AND status = 'active'
-            """, (channel_chat_id, channel_message_id, message.from_user.id))
-            claims = cur.fetchall()
-
-            if not claims:
-                await message.reply("❌ You don’t have any active claims on this card.")
-                return
-
-            total_to_cancel = len(claims)
-
-            earliest_claim = min(c["claimed_at"] for c in claims)
-            claimed_time = _parse_sqlite_ts(earliest_claim)
-
-            if message.from_user.id != ADMIN_ID:
-                if datetime.utcnow() - claimed_time > timedelta(minutes=CANCEL_WINDOW_MINUTES):
-                    await message.reply(
-                        f"❌ Cancellation window ({CANCEL_WINDOW_MINUTES} minutes) has passed.\n"
-                        "Please contact @ILoveCatFoochie."
-                    )
-                    return
-
-            cur.execute("""
-                UPDATE claims
-                SET status = 'cancelled'
-                WHERE channel_chat_id = ?
-                  AND channel_message_id = ?
-                  AND user_id = ?
-                  AND status = 'active'
-            """, (channel_chat_id, channel_message_id, message.from_user.id))
-
-            cur.execute("""
-                UPDATE card_listing
-                SET remaining_qty = remaining_qty + ?
-                WHERE channel_chat_id = ?
-                  AND channel_message_id = ?
-            """, (total_to_cancel, channel_chat_id, channel_message_id))
-
-            new_remaining = remaining + total_to_cancel
-
-            await message.reply(
-                f"⚠️ All claims cancelled by @{message.from_user.username or 'user'}\n"
-                f"Restored: {total_to_cancel}\n"
-                f"Available: {new_remaining}"
-            )
-
-    # =========================
-    # AUTO-EDIT CAPTION
-    # =========================
-    if new_remaining <= 0:
-        caption = f"{card_name}\nPrice: {price}\n❌ SOLD OUT"
-    else:
-        caption = f"{card_name}\nPrice: {price}\nAvailable: {new_remaining}"
-
-    try:
-        await message.bot.edit_message_caption(
-            chat_id=channel_chat_id,
-            message_id=channel_message_id,
-            caption=caption
+    # Prevent multiple separate claims
+    if await user_has_active_claim(channel_chat_id, channel_message_id, message.from_user.id):
+        await message.reply(
+            "❌ You already have active claim(s) on this card. "
+            "To edit claim, type cancel and claim again."
         )
-    except Exception as e:
-        print(f"Caption edit failed: {e}")
+        return
+
+    # Create claims
+    for _ in range(qty):
+        claim_order = await count_active_claims_for_card(
+            channel_chat_id,
+            channel_message_id,
+        ) + 1
+
+        cancelled_id = await get_latest_cancelled_claim_id(
+            channel_chat_id,
+            channel_message_id,
+            message.from_user.id,
+        )
+
+        if cancelled_id:
+            await revive_cancelled_claim(
+                claim_id=cancelled_id,
+                username=message.from_user.username,
+                claim_order=claim_order,
+            )
+        else:
+            await create_claim(
+                channel_chat_id=channel_chat_id,
+                channel_message_id=channel_message_id,
+                user_id=message.from_user.id,
+                username=message.from_user.username,
+                claim_order=claim_order,
+            )
+
+    # Reduce availability
+    await update_card_remaining(
+        channel_chat_id,
+        channel_message_id,
+        delta=-qty,
+    )
+
+    new_remaining = remaining - qty
+
+    await message.reply(
+        f"✅ Claim Approved @{message.from_user.username or 'user'}\n"
+        f"Quantity: {qty}\n"
+        f"Remaining: {new_remaining}"
+    )
