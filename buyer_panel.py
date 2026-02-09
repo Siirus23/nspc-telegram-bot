@@ -12,7 +12,7 @@ from db import (
     get_active_claims_by_user,
     set_session,
     get_session,
-    clear_session
+    clear_session,
     STATUS_AWAITING_PAYMENT,
     STATUS_VERIFYING,
     STATUS_AWAITING_ADDRESS,
