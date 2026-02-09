@@ -3,11 +3,13 @@ from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-# TEMP: SQLite admin session helpers removed during Supabase migration
 
 from invoice_pdf import build_invoice_pdf
 
 from db import (
+    get_orders_by_user,
+    get_latest_order_by_user,
+    get_active_claims_by_user,
     STATUS_AWAITING_PAYMENT,
     STATUS_VERIFYING,
     STATUS_AWAITING_ADDRESS,
@@ -15,6 +17,7 @@ from db import (
     STATUS_PACKED,
     STATUS_SHIPPED,
 )
+
 
 
 router = Router()
@@ -28,6 +31,7 @@ def build_buyer_panel():
     kb = InlineKeyboardBuilder()
 
     kb.button(text="📦 My Orders (Past Hauls)", callback_data="buyer:orders")
+    kb.button(text="📦 Latest Order Status", callback_data="buyer:status")
     kb.button(text="🧾 Resend Invoice (Summon Scroll)", callback_data="buyer:invoice")
     kb.button(text="✏️ Edit Shipping Address (Ask Shopkeeper)", callback_data="buyer:editaddr")
     kb.button(text="🎴 My Claims (Current Bag)", callback_data="buyer:claims")
@@ -55,18 +59,7 @@ async def show_buyer_panel(message: Message):
 async def view_my_orders(cb: CallbackQuery):
     user_id = cb.from_user.id
 
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT invoice_no, status, tracking_number, created_at
-            FROM orders
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            """,
-            (user_id,),
-        )
-        rows = cur.fetchall()
+    rows = await get_orders_by_user(user_id)
 
     if not rows:
         await cb.message.answer("📭 No orders found… your bag is suspiciously empty.")
@@ -78,6 +71,7 @@ async def view_my_orders(cb: CallbackQuery):
         "payment_received": "Pending Approval",
         "verifying": "Payment Verified",
         "ready_to_ship": "Ready to Ship",
+        "packed": "Packed",
         "shipped": "Shipped",
         "rejected": "Rejected",
         "cancelled": "Cancelled",
@@ -96,6 +90,7 @@ async def view_my_orders(cb: CallbackQuery):
 
     await cb.message.answer("\n".join(text), parse_mode="HTML")
     await cb.answer()
+
 
 # ==========================
 # Resend Invoice (Session Based)
@@ -343,3 +338,66 @@ async def buyer_panel(message: Message):
 
     # 5️⃣ Non-shipped fallback
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+@router.callback_query(F.data == "buyer:status")
+async def show_latest_order_status(cb: CallbackQuery):
+    user_id = cb.from_user.id
+
+    order = await get_latest_order_by_user(user_id)
+
+    if not order:
+        await cb.message.answer("🛒 You have no active orders.")
+        await cb.answer()
+        return
+
+    invoice = order["invoice_no"]
+    status = order["status"]
+
+    lines = [
+        f"🧾 <b>Invoice:</b> <code>{invoice}</code>",
+        f"📦 <b>Status:</b> {status.replace('_', ' ').title()}",
+    ]
+
+    if status == STATUS_AWAITING_PAYMENT:
+        lines.append("\n⏳ Awaiting payment.")
+
+    elif status == STATUS_VERIFYING:
+        lines.append("\n🔍 Payment is being verified.")
+
+    elif status == STATUS_AWAITING_ADDRESS:
+        lines.append("\n📮 Awaiting shipping address.")
+
+    elif status == STATUS_PACKING_PENDING:
+        lines.append("\n📦 Your order is being packed.")
+
+    elif status == STATUS_PACKED:
+        lines.append("\n🚚 Your order is ready to ship.")
+
+    elif status == STATUS_SHIPPED:
+        tracking = order["tracking_number"]
+
+        lines.append("\n🚚 <b>Your order has been shipped!</b>")
+        lines.append(f"<b>Tracking:</b> <code>{tracking}</code>")
+        lines.append(
+            "<b>Track here:</b>\n"
+            f"https://www.singpost.com/track-items?trackNums={tracking}"
+        )
+
+        # Send status text
+        await cb.message.answer("\n".join(lines), parse_mode="HTML")
+
+        # Send proof photo if exists
+        proof = order["shipping_proof_file_id"]
+        if proof:
+            await cb.message.answer_photo(
+                photo=proof,
+                caption="📦 Proof of shipping"
+            )
+
+        await cb.answer()
+        return
+
+    # Non-shipped statuses
+    await cb.message.answer("\n".join(lines), parse_mode="HTML")
+    await cb.answer()
+
