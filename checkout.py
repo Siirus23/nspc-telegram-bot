@@ -322,3 +322,116 @@ async def payment_proof_received(message: Message):
         text=f"📩 Payment received\nInvoice: {invoice_no}",
         reply_markup=kb.as_markup(),
     )
+    
+# =========================
+# CAPTURE ADDRESS
+# =========================
+
+@router.message(F.chat.type == "private")
+async def capture_address(message: Message):
+    user_id = message.from_user.id
+    ck = get_checkout(user_id) or {}
+
+    if ck.get("stage") != "awaiting_address":
+        return  # ignore unrelated messages
+
+    parsed = parse_address_block(message.text)
+    if not parsed:
+        await message.answer(
+            "❌ <b>Address format not recognised</b>\n\n"
+            "Please copy the template below, fill it in, and send it in <b>ONE message</b>:\n\n"
+            f"<code>{address_template()}</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    # Temporarily store address in checkout session
+    upsert_checkout(
+        user_id,
+        stage="confirm_address",
+        temp_address=parsed  # stored as JSON / dict
+    )
+
+    preview = (
+        "📦 <b>Please confirm your shipping address</b>\n\n"
+        f"<b>Name:</b> {parsed['name']}\n"
+        f"<b>Street:</b> {parsed['street']}\n"
+        f"<b>Unit:</b> {parsed['unit']}\n"
+        f"<b>Postal:</b> {parsed['postal']}\n"
+        f"<b>Phone:</b> {parsed['phone']}\n\n"
+        "Is this correct?"
+    )
+
+    await message.answer(
+        preview,
+        parse_mode="HTML",
+        reply_markup=kb_confirm_address()
+    )
+
+@router.callback_query(F.data == "checkout:address:confirm")
+async def address_confirm(cb: CallbackQuery):
+    user_id = cb.from_user.id
+    ck = get_checkout(user_id) or {}
+
+    if ck.get("stage") != "confirm_address":
+        await cb.answer()
+        return
+
+    addr = ck.get("temp_address")
+    invoice_no = ck.get("invoice_no")
+
+    if not addr or not invoice_no:
+        await cb.message.answer("❌ Address session expired. Please try again.")
+        await cb.answer()
+        return
+
+    # Persist address to DB
+    await save_shipping_address(
+        invoice_no=invoice_no,
+        **addr
+    )
+
+    # Move order forward
+    upsert_checkout(
+        user_id,
+        stage="packing",
+        temp_address=None
+    )
+
+    await cb.message.answer(
+        "✅ <b>Address confirmed!</b>\n\n"
+        "Your order is now being prepared 🧺📦\n"
+        "You’ll be notified once it’s shipped.",
+        parse_mode="HTML"
+    )
+
+    # Notify admin
+    await cb.message.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=(
+            "📦 <b>Order ready to pack</b>\n\n"
+            f"Invoice: <code>{invoice_no}</code>\n"
+            f"Buyer: @{cb.from_user.username or 'NoUsername'}"
+        ),
+        parse_mode="HTML"
+    )
+
+    await cb.answer()
+
+
+@router.callback_query(F.data == "checkout:address:reenter")
+async def address_reenter(cb: CallbackQuery):
+    user_id = cb.from_user.id
+
+    upsert_checkout(
+        user_id,
+        stage="awaiting_address",
+        temp_address=None
+    )
+
+    await cb.message.answer(
+        "✏️ No problem — please send your address again using this template:\n\n"
+        f"<code>{address_template()}</code>",
+        parse_mode="HTML"
+    )
+    await cb.answer()
