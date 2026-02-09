@@ -10,6 +10,8 @@ from db import (
     revive_cancelled_claim,
     create_claim,
     update_card_remaining,
+    get_active_claims_for_user,
+    cancel_claims_for_user,
 )
 
 from config import CHANNEL_ID, ADMIN_ID
