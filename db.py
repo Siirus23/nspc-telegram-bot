@@ -1,7 +1,9 @@
 import asyncpg
 import os
+import json
 
-from asyncpg.types import Json
+
+
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
