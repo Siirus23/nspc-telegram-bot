@@ -3,7 +3,7 @@ import os
 import json
 
 
-
+from datetime import timedelta
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -58,6 +58,69 @@ async def get_pool():
     if _pool is None:
         raise RuntimeError("Database not initialized. Call init_db() first.")
     return _pool
+
+# ===========================
+# STALE CLAIMS MGMT
+# ===========================
+
+async def get_stale_claims_for_user(user_id: int, hours: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT *
+            FROM claims
+            WHERE user_id = $1
+              AND status = 'active'
+              AND claimed_at < (now() - ($2 || ' hours')::interval)
+            """,
+            user_id,
+            hours
+        )
+
+
+async def cancel_all_claims_for_user(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Restore stock
+            rows = await conn.fetch(
+                """
+                SELECT channel_chat_id, channel_message_id, COUNT(*) AS qty
+                FROM claims
+                WHERE user_id = $1 AND status = 'active'
+                GROUP BY channel_chat_id, channel_message_id
+                """,
+                user_id
+            )
+
+            for r in rows:
+                await conn.execute(
+                    """
+                    UPDATE card_listing
+                    SET remaining_qty = remaining_qty + $1
+                    WHERE channel_chat_id = $2
+                      AND channel_message_id = $3
+                    """,
+                    r["qty"],
+                    r["channel_chat_id"],
+                    r["channel_message_id"]
+                )
+
+            # Cancel claims
+            await conn.execute(
+                """
+                UPDATE claims
+                SET status = 'cancelled'
+                WHERE user_id = $1 AND status = 'active'
+                """,
+                user_id
+            )
+
+
+
+
+
 # ===========================
 # ORDER QUERY HELPERS
 # ===========================
