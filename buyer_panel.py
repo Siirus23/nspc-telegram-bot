@@ -10,6 +10,9 @@ from db import (
     get_orders_by_user,
     get_latest_order_by_user,
     get_active_claims_by_user,
+    set_session,
+    get_session,
+    clear_session
     STATUS_AWAITING_PAYMENT,
     STATUS_VERIFYING,
     STATUS_AWAITING_ADDRESS,
@@ -97,39 +100,44 @@ async def view_my_orders(cb: CallbackQuery):
 # ==========================
 @router.callback_query(F.data == "buyer:invoice")
 async def resend_invoice_prompt(cb: CallbackQuery):
-    # Reuse your existing session store (even though the name says "admin_session")
-    set_admin_session(cb.from_user.id, "awaiting_invoice_resend", None)
+    await set_session(
+        user_id=cb.from_user.id,
+        role="buyer",
+        session_type="resend_invoice",
+        data={"step": "awaiting_invoice_no"},
+    )
 
     await cb.message.answer(
         "🧾🕯️ <b>Summon your invoice scroll</b>\n\n"
-        "Send the invoice number you want again.\n"
-        "Example: <code>INV-000016</code>\n\n"
-        "Tip: Use <b>My Orders</b> to copy the invoice number.",
+        "Please send the invoice number.\n"
+        "Example: <code>INV-000016</code>",
         parse_mode="HTML",
     )
     await cb.answer()
 
 @router.message(F.chat.type == "private", F.text.regexp(r"^INV-\d+"))
 async def resend_invoice(message: Message):
-    sess = get_admin_session(message.from_user.id)
-    if not sess or sess.get("session_type") != "awaiting_invoice_resend":
+    session = await get_session(message.from_user.id)
+
+    if not session:
         return
 
-    invoice_no = (message.text or "").strip()
+    if session["role"] != "buyer" or session["session_type"] != "resend_invoice":
+        return
 
-    # Load order + items + address (if any)
-    with get_db() as conn:
-        cur = conn.cursor()
+    invoice_no = message.text.strip()
 
-        cur.execute(
+    # Fetch order (Supabase)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        order = await conn.fetchrow(
             """
             SELECT *
             FROM orders
-            WHERE invoice_no = ?
+            WHERE invoice_no = $1
             """,
-            (invoice_no,),
+            invoice_no,
         )
-        order = cur.fetchone()
 
         if not order:
             await message.answer("❌ Invoice not found.")
@@ -139,32 +147,28 @@ async def resend_invoice(message: Message):
             await message.answer("❌ That invoice does not belong to you.")
             return
 
-        # Order items
-        cur.execute(
+        items = await conn.fetch(
             """
             SELECT card_name, price, qty
             FROM order_items
-            WHERE order_id = ?
+            WHERE order_id = $1
             ORDER BY id ASC
             """,
-            (order["id"],),
+            order["id"],
         )
-        item_rows = cur.fetchall()
 
-        # Shipping address (tracked only, if exists)
-        cur.execute(
+        addr = await conn.fetchrow(
             """
             SELECT name, street_name, unit_number, postal_code, phone_number, confirmed
             FROM shipping_address
-            WHERE order_id = ?
+            WHERE order_id = $1
             """,
-            (order["id"],),
+            order["id"],
         )
-        addr = cur.fetchone()
 
     invoice_items = [
         {"name": r["card_name"], "qty": int(r["qty"]), "price": float(r["price"])}
-        for r in item_rows
+        for r in items
     ]
 
     buyer_address = ""
@@ -205,7 +209,8 @@ async def resend_invoice(message: Message):
         print("Resend invoice error:", e)
         await message.answer("❌ Failed to resend invoice. Please contact admin.")
 
-    clear_admin_session(message.from_user.id)
+    await clear_session(message.from_user.id)
+
 
 # ==========================
 # Edit Shipping Address
