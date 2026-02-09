@@ -14,7 +14,15 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config import ADMIN_ID, CHANNEL_ID, CHANNEL_USERNAME
-# TEMP: SQLite admin session helpers removed during Supabase migration
+
+from datetime import datetime, timezone
+
+from db import (
+    get_stale_claims_for_user,
+    cancel_all_claims_for_user,
+)
+
+
 from invoice_pdf import build_invoice_pdf
 from callbacks import PaymentReviewCB, ShippingActionCB
 
@@ -287,6 +295,30 @@ def format_claim_summary(items):
 @router.message(F.chat.type == "private", Command("start"))
 async def dm_start(message: Message):
     user_id = message.from_user.id
+
+    # ============================
+    # M5.A — Auto-cancel stale claims (24h)
+    # ============================
+    stale_claims = await get_stale_claims_for_user(
+        user_id=user_id,
+        hours=24
+    )
+
+    if stale_claims:
+        await cancel_all_claims_for_user(user_id)
+
+        await message.answer(
+            "⏰ <b>Your claims expired</b>\n\n"
+            "Claims are held for <b>24 hours</b> before checkout.\n"
+            "They’ve been released so others get a fair chance.\n\n"
+            "👉 Please claim again if you’re still interested.",
+            parse_mode="HTML"
+        )
+        return  # ⛔ STOP /start here
+
+    # ============================
+    # EXISTING LOGIC (unchanged)
+    # ============================
     items = get_user_claims_summary(user_id)
 
     if not items:
@@ -294,15 +326,16 @@ async def dm_start(message: Message):
 
         await message.answer(
             "🎴<b>NightShade Poké Claims — Poké Mart Counter</b>\n"
-            "VVelcome, Trainer… don’t mind the creaking shelves 🧛🏽‍♂️🕯️\n\n"
+            "Welcome, Trainer… Vhat can I do for you today? 🧛🏽‍♂️🕯️\n\n"
             "<b>How to claim a card:</b>\n"
             "1) Open a card post in the channel\n"
             "2) Reply <b>claim</b> under that post’s comments/thread\n\n"
-            "Vhen you’ve claimed something, come back here for checkout. 🧾✨",
+            "When you’ve claimed something, come back here for checkout. 🧾✨",
             parse_mode="HTML",
             reply_markup=kb_buyer_home(has_claims=False),
         )
         return
+
 
     summary_text, cards_total = format_claim_summary(items)
 
@@ -432,7 +465,7 @@ async def delivery_pick(cb: CallbackQuery):
     )
 
     await cb.message.answer(
-        "🕯️ Want to peek at what’s still lurking in the shadows before invoice?",
+        "🕯️ Want to peek at what’s still lurking in the shadows (browse cards)?",
         reply_markup=kb_yes_no_browse(),
     )
     await cb.answer()
