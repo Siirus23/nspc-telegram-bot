@@ -117,6 +117,28 @@ def kb_continue():
     kb.adjust(1)
     return kb.as_markup()
 
+
+# =========================
+#  HELPERS
+# =========================
+
+def parse_price_to_float(price_str: str) -> float:
+    """
+    Converts price strings like:
+    "$12", "SGD 12", "12.50" → 12.0 / 12.5
+    """
+    if price_str is None:
+        return 0.0
+
+    s = str(price_str).upper().strip()
+    s = s.replace("SGD", "").replace("$", "").strip()
+
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
 # =========================
 # CLAIM SUMMARY
 # =========================
