@@ -30,19 +30,6 @@ def resolve_channel_post_keys(message: Message):
 
     return r.chat.id, r.message_id
 
-
-def _parse_sqlite_ts(ts: str) -> datetime:
-    # SQLite CURRENT_TIMESTAMP usually: "YYYY-MM-DD HH:MM:SS"
-    try:
-        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-    except Exception:
-        # fallback attempt
-        try:
-            return datetime.fromisoformat(ts)
-        except Exception:
-            return datetime.utcnow()
-
-
 @router.message(F.reply_to_message, F.edit_date.is_(None))
 async def handle_claim_and_cancel(message: Message):
     raw = message.text.strip().lower() if message.text else ""
