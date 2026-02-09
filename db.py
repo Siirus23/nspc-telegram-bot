@@ -29,7 +29,6 @@ VALID_STATUSES = {
     STATUS_SHIPPED,
 }
 
-
 async def init_db():
     """
     Connects the bot to Supabase.
@@ -48,8 +47,6 @@ async def init_db():
             ssl="require",
             timeout=30,
         )
-
-
 
 async def get_pool():
     """
@@ -117,6 +114,26 @@ async def cancel_all_claims_for_user(user_id: int):
                 """,
                 user_id
             )
+async def get_user_claims_summary(user_id: int):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                cl.card_name,
+                cl.price,
+                COUNT(*) AS qty
+            FROM claims c
+            JOIN card_listing cl
+              ON c.channel_chat_id = cl.channel_chat_id
+             AND c.channel_message_id = cl.channel_message_id
+            WHERE c.user_id = $1
+              AND c.status = 'active'
+            GROUP BY cl.card_name, cl.price
+            ORDER BY cl.card_name
+            """,
+            user_id
+        )
 
 
 
