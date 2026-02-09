@@ -124,37 +124,56 @@ async def admin_panel_actions(cb: CallbackQuery):
 # ======================================================
 
 async def list_pending_payments(message: Message):
-    with get_db() as conn:
-        cur = conn.execute("""
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
             SELECT invoice_no, username, total
             FROM orders
             WHERE status = 'payment_received'
             ORDER BY created_at ASC
         """)
-        rows = cur.fetchall()
 
     if not rows:
         await message.answer("✅ No payments awaiting approval.")
         return
 
     for r in rows:
+        invoice_no = r["invoice_no"]
+        username = r["username"] or "NoUsername"
+        total = float(r["total"] or 0)
+
         kb = InlineKeyboardBuilder()
-        kb.button(text="✅ Approve", callback_data=PaymentReviewCB(action="approve", invoice=r["invoice_no"]).pack())
-        kb.button(text="❌ Reject", callback_data=PaymentReviewCB(action="reject", invoice=r["invoice_no"]).pack())
+        kb.button(
+            text="✅ Approve",
+            callback_data=PaymentReviewCB(action="approve", invoice=invoice_no).pack()
+        )
+        kb.button(
+            text="❌ Reject",
+            callback_data=PaymentReviewCB(action="reject", invoice=invoice_no).pack()
+        )
         kb.adjust(2)
 
-        proof_id, proof_type = get_payment_proof(r["invoice_no"])
+        proof_id, proof_type = get_payment_proof(invoice_no)
 
         caption = (
-            f"<b>Invoice:</b> <code>{r['invoice_no']}</code>\n"
-            f"<b>Buyer:</b> @{r['username'] or 'NoUsername'}\n"
-            f"<b>Total:</b> ${float(r['total']):.2f}"
+            f"<b>Invoice:</b> <code>{invoice_no}</code>\n"
+            f"<b>Buyer:</b> @{username}\n"
+            f"<b>Total:</b> ${total:.2f}"
         )
 
         if proof_id and proof_type == "photo":
-            await message.answer_photo(proof_id, caption=caption, parse_mode="HTML", reply_markup=kb.as_markup())
-        else:
-            await message.answer(caption, parse_mode="HTML", reply_markup=kb.as_markup())
+            await message.answer_photo(
+                proof_id,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=kb.as_markup(),
+            )
+        elif proof_id and proof_type == "document":
+            await message.answer_document(
+                proof_id,
+                caption=caption,
+                parse_mod_
 
 @router.callback_query(PaymentReviewCB.filter(F.action == "approve"))
 async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReviewCB):
