@@ -824,3 +824,24 @@ async def get_checkout(user_id: int):
         )
         return dict(row) if row else None
 
+
+# =========================
+# PAYMENT PROOF
+# =========================
+
+async def set_payment_proof(invoice_no: str, file_id: str, file_type: str):
+    async with get_db() as conn:
+        await conn.execute(
+            """
+            update checkout
+            set
+                payment_proof_file_id = $1,
+                payment_proof_type = $2,
+                updated_at = now()
+            where invoice_no = $3
+            """,
+            file_id,
+            file_type,
+            invoice_no
+        )
+
