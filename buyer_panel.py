@@ -13,6 +13,7 @@ from db import (
     set_session,
     get_session,
     clear_session,
+    get_pool,
     STATUS_AWAITING_PAYMENT,
     STATUS_VERIFYING,
     STATUS_AWAITING_ADDRESS,
