@@ -764,3 +764,17 @@ async def update_card_remaining(
             channel_message_id,
         )
 
+# ===========================
+# CHECKOUT HANDLERS
+# ===========================
+async def get_checkout_by_invoice(invoice_no: str):
+    async with get_pool().acquire() as conn:
+        return await conn.fetchrow(
+            """
+            SELECT user_id, delivery_method
+            FROM checkout
+            WHERE invoice_no = $1
+            """,
+            invoice_no
+        )
+
