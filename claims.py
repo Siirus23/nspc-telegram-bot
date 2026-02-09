@@ -1,6 +1,6 @@
 from aiogram import Router, F
 from aiogram.types import Message
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from db import (
     get_card_by_post,
@@ -152,7 +152,10 @@ async def handle_claim_and_cancel(message: Message):
         claimed_time = earliest_claim
     
         if message.from_user.id != ADMIN_ID:
-            if datetime.utcnow() - claimed_time > timedelta(minutes=CANCEL_WINDOW_MINUTES):
+            now = datetime.now(timezone.utc)
+
+            if now - claimed_time > timedelta(minutes=CANCEL_WINDOW_MINUTES):
+
                 await message.reply(
                     f"❌ Cancellation window ({CANCEL_WINDOW_MINUTES} minutes) has passed.\n"
                     "Please contact @ILoveCatFoochie."
