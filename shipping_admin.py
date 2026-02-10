@@ -845,7 +845,7 @@ async def approve_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
 async def admin_shipping_photo(message: Message):
     # Find active shipping session waiting for a photo
-    session = await get_active_shipping_session_by_admin(message.from_user.id)
+    session = await get_active_shipping_session(message.from_user.id)
 
     if not session:
         return  # Admin is not in a shipping flow
@@ -868,7 +868,7 @@ async def admin_shipping_photo(message: Message):
 
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.text)
 async def admin_shipping_tracking_text(message: Message):
-    session = await get_active_shipping_session_by_admin(message.from_user.id)
+    session = await get_active_shipping_session(message.from_user.id)
 
     # We only care if we're waiting for confirmation step
     if not session or session["step"] != "awaiting_confirmation":
@@ -893,7 +893,7 @@ async def admin_shipping_tracking_text(message: Message):
 
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.text.casefold() == "confirm")
 async def admin_confirm_shipping(message: Message):
-    session = await get_active_shipping_session_by_admin(message.from_user.id)
+    session = await get_active_shipping_session(message.from_user.id)
 
     if not session or not session["detected_tracking"]:
         await message.answer("❌ No shipping session awaiting confirmation.")
