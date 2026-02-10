@@ -180,15 +180,21 @@ async def list_pending_payments(message: Message):
 
 @router.callback_query(PaymentReviewCB.filter(F.action == "approve"))
 async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReviewCB):
+    await cb.answer("Approving payment…")  # ✅ MUST be first
+
     invoice_no = callback_data.invoice
 
-    with get_db() as conn:
-        order = conn.execute("""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        order = await conn.fetchrow(
+            """
             SELECT user_id, delivery_method
             FROM orders
-            WHERE invoice_no = ?
+            WHERE invoice_no = $1
               AND status = 'payment_received'
-        """, (invoice_no,)).fetchone()
+            """,
+            invoice_no
+        )
 
         if not order:
             await cb.answer("❌ Order already handled or not found.", show_alert=True)
@@ -198,17 +204,18 @@ async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReview
         delivery_method = order["delivery_method"]
 
         # Lock order
-        conn.execute("""
+        await conn.execute(
+            """
             UPDATE orders
             SET status = 'paid'
-            WHERE invoice_no = ?
-        """, (invoice_no,))
+            WHERE invoice_no = $1
+            """,
+            invoice_no
+        )
 
-    await cb.answer("✅ Payment approved")
-
-    # 🔀 SINGLE SOURCE OF TRUTH
+    # 🔀 SINGLE SOURCE OF TRUTH (checkout state)
     if delivery_method == "tracked":
-        upsert_checkout(user_id, stage="awaiting_address")
+        await upsert_checkout(user_id, stage="awaiting_address")
 
         await cb.bot.send_message(
             user_id,
@@ -219,7 +226,7 @@ async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReview
         )
 
     else:  # self collection
-        upsert_checkout(user_id, stage="packing")
+        await upsert_checkout(user_id, stage="packing")
 
         await cb.bot.send_message(
             user_id,
@@ -234,6 +241,7 @@ async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReview
             f"📦 <b>Order ready to pack</b>\n\nInvoice: <code>{invoice_no}</code>",
             parse_mode="HTML"
         )
+
 
 
 # ======================================================
@@ -396,7 +404,7 @@ async def admin_shipping_photo(message: Message):
 
 async def list_cancel_claim_users(message: Message):
     """Step 1: show numbered users who still have active claims."""
-    with get_db() as conn:
+    from claims_repo import fetch_active_claim_users
         cur = conn.cursor()
         cur.execute("""
             SELECT user_id,
@@ -409,7 +417,7 @@ async def list_cancel_claim_users(message: Message):
             GROUP BY user_id
             ORDER BY earliest ASC
         """, (CHANNEL_ID,))
-        rows = cur.fetchall()
+        rows = await fetch_active_claim_users(CHANNEL_ID)
 
     if not rows:
         await message.answer("✅ No active claims found.")
@@ -430,27 +438,11 @@ async def list_cancel_claim_users(message: Message):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-def _fetch_nth_claim_user(n: int):
-    """Recompute the same ordered list and return the nth user row."""
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT user_id,
-                   COALESCE(username, '') AS username,
-                   COUNT(*) AS qty,
-                   MIN(claimed_at) AS earliest
-            FROM claims
-            WHERE channel_chat_id = ?
-              AND status = 'active'
-            GROUP BY user_id
-            ORDER BY earliest ASC
-        """, (CHANNEL_ID,))
-        rows = cur.fetchall()
-
-    if n < 1 or n > len(rows):
+async def fetch_nth_claim_user(channel_id: int, n: int) -> Optional[Dict]:
+    users = await fetch_active_claim_users(channel_id)
+    if n < 1 or n > len(users):
         return None
-    return dict(rows[n - 1])
-
+    return users[n - 1]
 
 async def _send_user_claimed_cards(message: Message, user_id: int, username: str | None = None):
     """Step 2: show numbered cards (grouped) that this user has claimed."""
@@ -499,10 +491,11 @@ async def _send_user_claimed_cards(message: Message, user_id: int, username: str
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-def _fetch_user_claim_groups(user_id: int):
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
+async def fetch_user_claim_groups(channel_id: int, user_id: int) -> List[Dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
             SELECT
                 cl.card_name AS card_name,
                 cl.price AS price_str,
@@ -513,13 +506,17 @@ def _fetch_user_claim_groups(user_id: int):
             JOIN card_listing cl
               ON cl.channel_chat_id = c.channel_chat_id
              AND cl.channel_message_id = c.channel_message_id
-            WHERE c.channel_chat_id = ?
-              AND c.user_id = ?
+            WHERE c.channel_chat_id = $1
+              AND c.user_id = $2
               AND c.status = 'active'
             GROUP BY cl.card_name, cl.price, c.channel_message_id
             ORDER BY first_order ASC
-        """, (CHANNEL_ID, user_id))
-        return [dict(r) for r in cur.fetchall()]
+            """,
+            channel_id,
+            user_id
+        )
+    return [dict(r) for r in rows]
+
 
 
 async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: int, reason: str = "admin_cancel"):
@@ -772,18 +769,28 @@ async def process_cancel_claims_text(message: Message) -> bool:
 
     return False
 
+# ======================================================
+#             APPROVE PAYMENT HANDLER
+# ======================================================
+
+
 @router.callback_query(PaymentReviewCB.filter(F.action == "approve"))
 async def approve_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
+    await cb.answer("Approving payment…")
+
     invoice_no = callback_data.invoice
 
-    with get_db() as conn:
-        # Fetch order
-        order = conn.execute("""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        order = await conn.fetchrow(
+            """
             SELECT user_id, delivery_method
             FROM orders
-            WHERE invoice_no = ?
+            WHERE invoice_no = $1
               AND status = 'payment_received'
-        """, (invoice_no,)).fetchone()
+            """,
+            invoice_no
+        )
 
         if not order:
             await cb.answer("❌ Order not found or already processed.", show_alert=True)
@@ -792,21 +799,18 @@ async def approve_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
         user_id = order["user_id"]
         delivery_method = order["delivery_method"]
 
-        # Lock order as paid
-        conn.execute("""
+        await conn.execute(
+            """
             UPDATE orders
             SET status = 'paid'
-            WHERE invoice_no = ?
-        """, (invoice_no,))
-
-    await cb.answer("✅ Payment approved")
-
-    # 🔀 THIS IS THE MISSING FORK
-    if delivery_method == "tracked":
-        upsert_checkout(
-            user_id,
-            stage="awaiting_address"
+            WHERE invoice_no = $1
+            """,
+            invoice_no
         )
+
+    # 🔀 Checkout fork (in-memory)
+    if delivery_method == "tracked":
+        await upsert_checkout(user_id, stage="awaiting_address")
 
         await cb.bot.send_message(
             user_id,
@@ -817,10 +821,7 @@ async def approve_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
         )
 
     else:  # self collection
-        upsert_checkout(
-            user_id,
-            stage="packing"
-        )
+        await upsert_checkout(user_id, stage="packing")
 
         await cb.bot.send_message(
             user_id,
@@ -830,7 +831,6 @@ async def approve_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
             parse_mode="HTML"
         )
 
-        # Notify admin immediately
         await cb.bot.send_message(
             ADMIN_ID,
             f"📦 <b>Order ready to pack</b>\n\nInvoice: <code>{invoice_no}</code>",
