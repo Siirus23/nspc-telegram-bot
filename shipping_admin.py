@@ -92,10 +92,7 @@ async def admin_panel_actions(cb: CallbackQuery):
         await list_pending_payments(cb.message)
 
     elif action == "packlist":
-        await cb.message.answer(
-            "⚠️ Packing List is temporarily unavailable during migration.",
-            parse_mode="HTML"
-        )
+        await generate_packlist(cb.message)
 
     elif action == "toship":
         await show_orders_ready_to_ship(cb.message)
