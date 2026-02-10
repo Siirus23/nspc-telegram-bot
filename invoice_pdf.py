@@ -83,15 +83,27 @@ def build_invoice_pdf(
 
     for item in items:
         name = item.get("name")
-        qty = item.get("qty", 1)
-        price = float(item.get("price", 0))
+        qty = int(item.get("qty", 1))
+        raw_price = item.get("price", 0)
 
+        if isinstance(raw_price, str):
+            raw_price = (
+                raw_price
+                .replace("SGD", "")
+                .replace("$", "")
+                .replace(",", "")
+                .strip()
+            )
+    
+        price = float(raw_price)
+    
         table_data.append([
             name,
             str(qty),
-            f"{price:.2f}",
-            f"{price * qty:.2f}"
+            f"${price:.2f}",
+            f"${price * qty:.2f}"
         ])
+
 
     table = Table(table_data, colWidths=[80*mm, 20*mm, 35*mm, 35*mm])
 
