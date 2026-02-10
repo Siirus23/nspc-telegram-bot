@@ -263,17 +263,17 @@ async def delivery_pick(cb: CallbackQuery):
 # =========================
 @router.callback_query(F.data == "checkout:continue")
 async def checkout_continue(cb: CallbackQuery):
+    await cb.answer("Generating invoice…")
+
     user_id = cb.from_user.id
     ck = await get_checkout(user_id) or {}
 
     if ck.get("stage") != "awaiting_confirm":
-        await cb.answer()
         return
 
     items = await get_user_claims_summary(user_id)
     if not items:
         await cb.message.answer("⚠️ No active claims.")
-        await cb.answer()
         return
 
     summary, cards_total = format_claim_summary(items)
@@ -282,7 +282,11 @@ async def checkout_continue(cb: CallbackQuery):
 
     invoice_no = f"INV-{int(datetime.now(timezone.utc).timestamp())}"
 
-    await upsert_checkout(user_id, stage="awaiting_payment", invoice_no=invoice_no)
+    await upsert_checkout(
+        user_id,
+        stage="awaiting_payment",
+        invoice_no=invoice_no
+    )
 
     invoice_items = [
         {"name": it["card_name"], "qty": it["qty"], "price": it["price"]}
@@ -304,11 +308,13 @@ async def checkout_continue(cb: CallbackQuery):
 
     await cb.message.answer_document(
         BufferedInputFile(pdf, filename=f"{invoice_no}.pdf"),
-        caption=f"🧾 Invoice <code>{invoice_no}</code>\nTotal: ${total:.2f} SGD\n\nSend payment proof here.",
+        caption=(
+            f"🧾 Invoice <code>{invoice_no}</code>\n"
+            f"Total: ${total:.2f} SGD\n\n"
+            "Send payment proof here."
+        ),
         parse_mode="HTML",
     )
-
-    await cb.answer()
 
 # =========================
 # PAYMENT PROOF
