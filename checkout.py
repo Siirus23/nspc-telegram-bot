@@ -226,7 +226,7 @@ async def buyer_go_delivery(cb: CallbackQuery):
 @router.callback_query(F.data.startswith("checkout:delivery:"))
 async def delivery_pick(cb: CallbackQuery):
     user_id = cb.from_user.id
-    ck = get_checkout(user_id) or {}
+    ck = await get_checkout(user_id) or {}
 
     if ck.get("stage") != "choose_delivery":
         await cb.answer()
@@ -264,7 +264,7 @@ async def delivery_pick(cb: CallbackQuery):
 @router.callback_query(F.data == "checkout:continue")
 async def checkout_continue(cb: CallbackQuery):
     user_id = cb.from_user.id
-    ck = get_checkout(user_id) or {}
+    ck = await get_checkout(user_id) or {}
 
     if ck.get("stage") != "awaiting_confirm":
         await cb.answer()
@@ -315,7 +315,7 @@ async def checkout_continue(cb: CallbackQuery):
 # =========================
 @router.message(F.chat.type == "private", (F.photo | F.document))
 async def payment_proof_received(message: Message):
-    ck = get_checkout(message.from_user.id) or {}
+    ck = await get_checkout(message.from_user.id) or {}
     if ck.get("stage") != "awaiting_payment":
         return
 
@@ -352,7 +352,7 @@ async def payment_proof_received(message: Message):
 @router.message(F.chat.type == "private")
 async def capture_address(message: Message):
     user_id = message.from_user.id
-    ck = get_checkout(user_id) or {}
+    ck = await get_checkout(user_id) or {}
 
     if ck.get("stage") != "awaiting_address":
         return  # ignore unrelated messages
@@ -393,7 +393,7 @@ async def capture_address(message: Message):
 @router.callback_query(F.data == "checkout:address:confirm")
 async def address_confirm(cb: CallbackQuery):
     user_id = cb.from_user.id
-    ck = get_checkout(user_id) or {}
+    ck = await get_checkout(user_id) or {}
 
     if ck.get("stage") != "confirm_address":
         await cb.answer()
