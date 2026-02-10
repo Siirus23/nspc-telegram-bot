@@ -285,12 +285,17 @@ async def generate_packlist(message: Message):
 
 @router.callback_query(PackingActionCB.filter())
 async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionCB):
-    with get_db() as conn:
-        mark_order_packed(conn, callback_data.invoice)
-        row = conn.execute(
-            "SELECT user_id FROM orders WHERE invoice_no = ?",
-            (callback_data.invoice,)
-        ).fetchone()
+    pool = await get_pool()
+    invoice_no = callback_data.invoice
+
+    async with pool.acquire() as conn:
+        # Mark order as packed
+        row = await conn.fetchrow("""
+            UPDATE orders
+            SET status = 'packed'
+            WHERE invoice_no = $1
+            RETURNING user_id
+        """, invoice_no)
 
     await cb.answer("📦 Marked as packed")
 
@@ -298,8 +303,8 @@ async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionC
         await cb.bot.send_message(
             row["user_id"],
             "📦 <b>Your order has been packed.</b>",
-            parse_mode="HTML"
-        )
+            parse_mode_
+
 
 # ======================================================
 # READY TO SHIP
