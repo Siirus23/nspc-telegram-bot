@@ -174,7 +174,7 @@ async def list_pending_payments(message: Message):
                 proof_id,
                 caption=caption,
                 parse_mod_
-
+            )
 @router.callback_query(PaymentReviewCB.filter(F.action == "approve"))
 async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReviewCB):
     invoice_no = callback_data.invoice
