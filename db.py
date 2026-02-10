@@ -791,41 +791,7 @@ async def get_checkout_by_invoice(invoice_no: str):
             invoice_no
         )
 
-# =========================
-# CHECKOUT SESSION HELPERS
-# =========================
 
-async def upsert_checkout(user_id: int, **fields):
-    cols = []
-    vals = []
-    idx = 2
-
-    for k, v in fields.items():
-        cols.append(f"{k} = ${idx}")
-        vals.append(v)
-        idx += 1
-
-    set_clause = ", ".join(cols)
-
-    query = f"""
-    insert into checkout (user_id)
-    values ($1)
-    on conflict (user_id)
-    do update set
-        {set_clause},
-        updated_at = now()
-    """
-
-    async with get_db() as conn:
-        await conn.execute(query, user_id, *vals)
-
-async def get_checkout(user_id: int):
-    async with get_db() as conn:
-        row = await conn.fetchrow(
-            "select * from checkout where user_id = $1",
-            user_id
-        )
-        return dict(row) if row else None
 
 
 # =========================
