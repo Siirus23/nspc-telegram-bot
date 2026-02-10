@@ -671,13 +671,15 @@ async def admin_shipping_photo(message: Message):
         parse_mode="HTML"
     )
 
-@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.text)
+@router.message(F.chat.type == "private",F.from_user.id == ADMIN_ID,F.text,)
 async def admin_shipping_tracking_text(message: Message):
     session = await get_active_shipping_session(message.from_user.id)
 
-    # We only care if we're waiting for confirmation step
-    if not session or session["step"] != "awaiting_confirmation":
-        return
+    if not session:
+        return  # allow other handlers (like cancel-claims)
+
+    # handle shipping text here
+
 
     tracking = extract_tracking_number((message.text or "").upper())
     if not tracking:
