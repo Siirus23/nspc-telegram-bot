@@ -10,6 +10,11 @@ from admin_sessions import (
     get_admin_session,
     clear_admin_session,
 )
+from claims_repo import (
+    fetch_active_claim_users,
+    fetch_user_claim_groups,
+    admin_cancel_claim_group,
+)
 
 import re
 
@@ -406,14 +411,12 @@ async def admin_shipping_photo(message: Message):
     )
 
 # ======================================================
-# CANCEL CLAIMS WIZARD (VERBATIM — UNCHANGED)
+# CANCEL CLAIMS WIZARD
 # ======================================================
 
 async def list_cancel_claim_users(message: Message):
     """Step 1: show numbered users who still have active claims."""
-    from claims_repo import fetch_active_claim_users
-
-    rows = await fetch_active_claim_users(CHANNEL_ID)
+     rows = await fetch_active_claim_users(CHANNEL_ID)
 
     if not rows:
         await message.answer("✅ No active claims found.")
@@ -436,42 +439,18 @@ async def list_cancel_claim_users(message: Message):
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
-
-async def fetch_nth_claim_user(channel_id: int, n: int) -> Optional[Dict]:
-    users = await fetch_active_claim_users(channel_id)
-    if n < 1 or n > len(users):
-        return None
-    return users[n - 1]
-
-async def _send_user_claimed_cards(message: Message, user_id: int, username: str | None = None):
-    """Step 2: show numbered cards (grouped) that this user has claimed."""
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT
-                cl.card_name AS card_name,
-                cl.price AS price_str,
-                c.channel_message_id AS post_mid,
-                COUNT(*) AS qty,
-                MIN(c.claim_order) AS first_order
-            FROM claims c
-            JOIN card_listing cl
-              ON cl.channel_chat_id = c.channel_chat_id
-             AND cl.channel_message_id = c.channel_message_id
-            WHERE c.channel_chat_id = ?
-              AND c.user_id = ?
-              AND c.status = 'active'
-            GROUP BY cl.card_name, cl.price, c.channel_message_id
-            ORDER BY first_order ASC
-        """, (CHANNEL_ID, user_id))
-        items = cur.fetchall()
+async def _send_user_claimed_cards(
+    message: Message,
+    user_id: int,
+    username: str | None = None,
+):
+    items = await fetch_user_claim_groups(CHANNEL_ID, user_id)
 
     if not items:
         await message.answer("✅ This buyer has no active claims now.")
         set_admin_session(ADMIN_ID, "cc_select_user", None)
         return
 
-    # store selected user_id in invoice_no column (text)
     set_admin_session(ADMIN_ID, "cc_select_items", str(user_id))
 
     uname = f"@{username}" if username else "(no username)"
@@ -484,185 +463,11 @@ async def _send_user_claimed_cards(message: Message, user_id: int, username: str
 
     for i, it in enumerate(items, start=1):
         lines.append(
-            f"{i}) {it['card_name']} — {it['price_str']} — x<code>{it['qty']}</code> — post <code>{it['post_mid']}</code>"
+            f"{i}) {it['card_name']} — {it['price_str']} — "
+            f"x<code>{it['qty']}</code> — post <code>{it['post_mid']}</code>"
         )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
-
-
-async def fetch_user_claim_groups(channel_id: int, user_id: int) -> List[Dict]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT
-                cl.card_name AS card_name,
-                cl.price AS price_str,
-                c.channel_message_id AS post_mid,
-                COUNT(*) AS qty,
-                MIN(c.claim_order) AS first_order
-            FROM claims c
-            JOIN card_listing cl
-              ON cl.channel_chat_id = c.channel_chat_id
-             AND cl.channel_message_id = c.channel_message_id
-            WHERE c.channel_chat_id = $1
-              AND c.user_id = $2
-              AND c.status = 'active'
-            GROUP BY cl.card_name, cl.price, c.channel_message_id
-            ORDER BY first_order ASC
-            """,
-            channel_id,
-            user_id
-        )
-    return [dict(r) for r in rows]
-
-
-
-async def _admin_cancel_claim_group(message: Message, user_id: int, post_mid: int, reason: str = "admin_cancel"):
-    """
-    Cancel ALL active claims for a user on a specific post (card), restore stock, update caption.
-    Also adjusts any non-shipped order for that user.
-    """
-    with get_db() as conn:
-        cur = conn.cursor()
-        conn.execute("BEGIN IMMEDIATE")
-
-        cur.execute("""
-            SELECT COUNT(*) AS c
-            FROM claims
-            WHERE channel_chat_id = ?
-              AND channel_message_id = ?
-              AND user_id = ?
-              AND status = 'active'
-        """, (CHANNEL_ID, post_mid, user_id))
-        qty = cur.fetchone()["c"]
-
-        if qty <= 0:
-            conn.rollback()
-            return None
-
-        cur.execute("""
-            SELECT card_name, price, remaining_qty
-            FROM card_listing
-            WHERE channel_chat_id = ?
-              AND channel_message_id = ?
-        """, (CHANNEL_ID, post_mid))
-        card = cur.fetchone()
-
-        if not card:
-            conn.rollback()
-            return None
-
-        card_name = card["card_name"]
-        price_str = card["price"]
-        remaining = int(card["remaining_qty"])
-
-        cur.execute("""
-            UPDATE claims
-            SET status = 'cancelled'
-            WHERE channel_chat_id = ?
-              AND channel_message_id = ?
-              AND user_id = ?
-              AND status = 'active'
-        """, (CHANNEL_ID, post_mid, user_id))
-
-        cur.execute("""
-            UPDATE card_listing
-            SET remaining_qty = remaining_qty + ?
-            WHERE channel_chat_id = ?
-              AND channel_message_id = ?
-        """, (qty, CHANNEL_ID, post_mid))
-
-        cur.execute("""
-            INSERT INTO admin_logs (action_type, admin_id, target_user_id, card_name, channel_message_id, quantity, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, ("cancel_claim", ADMIN_ID, user_id, card_name, post_mid, qty, reason))
-
-        conn.commit()
-
-    new_remaining = remaining + qty
-
-    caption = (
-        f"{card_name}\nPrice: {price_str}\n❌ SOLD OUT"
-        if new_remaining <= 0 else
-        f"{card_name}\nPrice: {price_str}\nAvailable: {new_remaining}"
-    )
-    try:
-        await message.bot.edit_message_caption(chat_id=CHANNEL_ID, message_id=post_mid, caption=caption)
-    except Exception:
-        pass
-
-    order_cancelled = False
-    updated_invoice = None
-
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT id, invoice_no, delivery_fee, status
-            FROM orders
-            WHERE user_id = ?
-              AND status IN ('pending_payment', 'payment_received', 'verifying', 'ready_to_ship')
-            ORDER BY created_at DESC
-            LIMIT 1
-        """, (user_id,))
-        ord_row = cur.fetchone()
-
-        if ord_row:
-            order_id = ord_row["id"]
-            updated_invoice = ord_row["invoice_no"]
-
-            cur.execute("""
-                SELECT id, qty, price
-                FROM order_items
-                WHERE order_id = ?
-                  AND post_message_id = ?
-            """, (order_id, post_mid))
-            oi = cur.fetchone()
-
-            if oi:
-                oi_id = oi["id"]
-                oi_qty = int(oi["qty"])
-
-                remove_qty = min(qty, oi_qty)
-                new_qty = oi_qty - remove_qty
-
-                if new_qty <= 0:
-                    cur.execute("DELETE FROM order_items WHERE id = ?", (oi_id,))
-                else:
-                    cur.execute("UPDATE order_items SET qty = ? WHERE id = ?", (new_qty, oi_id))
-
-                cur.execute("""
-                    SELECT COALESCE(SUM(price * qty), 0) AS cards_total
-                    FROM order_items
-                    WHERE order_id = ?
-                """, (order_id,))
-                cards_total = float(cur.fetchone()["cards_total"] or 0)
-
-                delivery_fee = float(ord_row["delivery_fee"] or 0)
-                total = cards_total + delivery_fee
-
-                if cards_total <= 0:
-                    cur.execute(
-                        "UPDATE orders SET status = 'cancelled', cards_total = 0, total = 0 WHERE id = ?",
-                        (order_id,)
-                    )
-                    order_cancelled = True
-                else:
-                    cur.execute(
-                        "UPDATE orders SET cards_total = ?, total = ? WHERE id = ?",
-                        (cards_total, total, order_id)
-                    )
-
-            conn.commit()
-
-    return {
-        "card_name": card_name,
-        "qty": qty,
-        "post_mid": post_mid,
-        "new_remaining": new_remaining,
-        "invoice_no": updated_invoice,
-        "order_cancelled": order_cancelled,
-    }
 
 
 def _parse_selection_numbers(text: str):
