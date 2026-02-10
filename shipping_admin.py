@@ -15,6 +15,7 @@ from callbacks import (
 from ocr_utils import extract_text_from_photo, extract_tracking_number
 
 from db import (
+    get_pool,
     get_orders_by_status,
     create_shipping_session,
     get_active_shipping_session,
