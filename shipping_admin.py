@@ -735,3 +735,15 @@ async def admin_confirm_shipping(message: Message):
             parse_mode="HTML"
         )
 
+@router.message(F.chat.type == "private")
+async def admin_text_router(message: Message):
+    # Only admin should trigger admin text flows
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # Cancel-claims wizard
+    handled = await process_cancel_claims_text(message)
+    if handled:
+        return
+
+    # (Later you can add more admin text flows here)
