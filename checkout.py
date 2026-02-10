@@ -17,11 +17,11 @@ from db import (
     get_stale_claims_for_user,
     cancel_all_claims_for_user,
     get_user_claims_summary,
-    upsert_checkout,
-    get_checkout,
     set_payment_proof,
     get_checkout_by_invoice,
 )
+
+from checkout_store import get_checkout, upsert_checkout
 
 from invoice_pdf import build_invoice_pdf
 from callbacks import PaymentReviewCB
