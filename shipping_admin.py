@@ -415,8 +415,7 @@ async def admin_shipping_photo(message: Message):
 # ======================================================
 
 async def list_cancel_claim_users(message: Message):
-    """Step 1: show numbered users who still have active claims."""
-     rows = await fetch_active_claim_users(CHANNEL_ID)
+    rows = await fetch_active_claim_users(CHANNEL_ID)
 
     if not rows:
         await message.answer("✅ No active claims found.")
@@ -437,6 +436,7 @@ async def list_cancel_claim_users(message: Message):
         )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
+
 
 
 async def _send_user_claimed_cards(
