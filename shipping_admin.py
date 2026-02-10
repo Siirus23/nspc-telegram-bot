@@ -245,34 +245,46 @@ async def handle_payment_approve(cb: CallbackQuery, callback_data: PaymentReview
 
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("packlist"))
 async def generate_packlist(message: Message):
-    with get_db() as conn:
-        orders = conn.execute("""
+    pool = await get_pool()
+
+    async with pool.acquire() as conn:
+        orders = await conn.fetch("""
             SELECT id, invoice_no, username
             FROM orders
-            WHERE status = ?
+            WHERE status = 'packing'
             ORDER BY created_at ASC
-        """, (STATUS_PACKING_PENDING,)).fetchall()
+        """)
 
-    if not orders:
-        await message.answer("📦 No orders to pack.")
-        return
+        if not orders:
+            await message.answer("📦 No orders to pack.")
+            return
 
-    for o in orders:
-        items = conn.execute("""
-            SELECT card_name, qty FROM order_items WHERE order_id = ?
-        """, (o["id"],)).fetchall()
+        for o in orders:
+            items = await conn.fetch("""
+                SELECT card_name, qty
+                FROM order_items
+                WHERE order_id = $1
+            """, o["id"])
 
-        text = f"📦 <b>{o['invoice_no']}</b> – @{o['username'] or 'Unknown'}\n\n"
-        for it in items:
-            text += f"- {it['card_name']} (x{it['qty']})\n"
+            text = f"📦 <b>{o['invoice_no']}</b> – @{o['username'] or 'Unknown'}\n\n"
+            for it in items:
+                text += f"- {it['card_name']} (x{it['qty']})\n"
 
-        kb = InlineKeyboardBuilder()
-        kb.button(
-            text="📦 Mark as Packed",
-            callback_data=PackingActionCB(action="packed", invoice=o["invoice_no"]).pack()
-        )
+            kb = InlineKeyboardBuilder()
+            kb.button(
+                text="📦 Mark as Packed",
+                callback_data=PackingActionCB(
+                    action="packed",
+                    invoice=o["invoice_no"]
+                ).pack()
+            )
 
-        await message.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
+            await message.answer(
+                text,
+                parse_mode="HTML",
+                reply_markup=kb.as_markup()
+            )
+
 
 @router.callback_query(PackingActionCB.filter())
 async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionCB):
