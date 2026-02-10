@@ -407,12 +407,26 @@ async def address_confirm(cb: CallbackQuery):
         await cb.answer()
         return
 
+   
     # Persist address to DB
     await save_shipping_address(
         invoice_no=invoice_no,
         **addr
     )
 
+     # Move order status to packing (Supabase)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE orders
+            SET status = 'packing'
+            WHERE invoice_no = $1
+            """,
+            invoice_no
+        )
+
+        
     # Move order forward
     upsert_checkout(
         user_id,
@@ -428,17 +442,19 @@ async def address_confirm(cb: CallbackQuery):
     )
 
     # Notify admin
-    await cb.message.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=(
-            "📦 <b>Order ready to pack</b>\n\n"
-            f"Invoice: <code>{invoice_no}</code>\n"
-            f"Buyer: @{cb.from_user.username or 'NoUsername'}"
-        ),
-        parse_mode="HTML"
-    )
+    try:
+        await cb.message.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                "📦 <b>Order ready to pack</b>\n\n"
+                f"Invoice: <code>{invoice_no}</code>\n"
+                f"Buyer: @{cb.from_user.username or 'NoUsername'}"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
-    await cb.answer()
 
 
 @router.callback_query(F.data == "checkout:address:reenter")
