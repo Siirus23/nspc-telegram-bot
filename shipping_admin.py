@@ -405,19 +405,8 @@ async def admin_shipping_photo(message: Message):
 async def list_cancel_claim_users(message: Message):
     """Step 1: show numbered users who still have active claims."""
     from claims_repo import fetch_active_claim_users
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT user_id,
-                   COALESCE(username, '') AS username,
-                   COUNT(*) AS qty,
-                   MIN(claimed_at) AS earliest
-            FROM claims
-            WHERE channel_chat_id = ?
-              AND status = 'active'
-            GROUP BY user_id
-            ORDER BY earliest ASC
-        """, (CHANNEL_ID,))
-        rows = await fetch_active_claim_users(CHANNEL_ID)
+
+    rows = await fetch_active_claim_users(CHANNEL_ID)
 
     if not rows:
         await message.answer("✅ No active claims found.")
@@ -433,9 +422,12 @@ async def list_cancel_claim_users(message: Message):
 
     for i, r in enumerate(rows, start=1):
         uname = f"@{r['username']}" if r["username"] else "(no username)"
-        lines.append(f"{i}) {uname} — <code>{r['qty']}</code> claim(s) — <code>{r['user_id']}</code>")
+        lines.append(
+            f"{i}) {uname} — <code>{r['qty']}</code> claim(s) — <code>{r['user_id']}</code>"
+        )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
+
 
 
 async def fetch_nth_claim_user(channel_id: int, n: int) -> Optional[Dict]:
