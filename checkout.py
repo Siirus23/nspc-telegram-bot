@@ -181,7 +181,7 @@ async def dm_start(message: Message):
 
     items = await get_user_claims_summary(user_id)
     if not items:
-        upsert_checkout(user_id, stage="idle")
+        await upsert_checkout(user_id, stage="idle")
         await message.answer(
             "🎴 <b>NightShade Poké Claims</b>\n\n"
             "Reply <b>claim</b> under a card post to reserve it.\n"
@@ -193,7 +193,7 @@ async def dm_start(message: Message):
 
     summary, total = format_claim_summary(items)
 
-    upsert_checkout(
+    await upsert_checkout(
         user_id,
         stage="choose_delivery",
         cards_total=total,
@@ -247,7 +247,7 @@ async def delivery_pick(cb: CallbackQuery):
     cards_total = float(ck.get("cards_total") or 0)
     total = cards_total + fee
 
-    upsert_checkout(
+    await upsert_checkout(
         user_id,
         stage="awaiting_confirm",
         delivery_method=method,
@@ -282,7 +282,7 @@ async def checkout_continue(cb: CallbackQuery):
 
     invoice_no = f"INV-{int(datetime.now(timezone.utc).timestamp())}"
 
-    upsert_checkout(user_id, stage="awaiting_payment", invoice_no=invoice_no)
+    await upsert_checkout(user_id, stage="awaiting_payment", invoice_no=invoice_no)
 
     invoice_items = [
         {"name": it["card_name"], "qty": it["qty"], "price": it["price"]}
@@ -328,7 +328,7 @@ async def payment_proof_received(message: Message):
     elif message.document:
         set_payment_proof(invoice_no, message.document.file_id, "document")
 
-    upsert_checkout(message.from_user.id, stage="payment_submitted")
+    await upsert_checkout(message.from_user.id, stage="payment_submitted")
 
     await message.answer(
         "✅ Payment proof received.\nPlease wait for admin approval."
@@ -368,7 +368,7 @@ async def capture_address(message: Message):
         return
 
     # Temporarily store address in checkout session
-    upsert_checkout(
+    await upsert_checkout(
         user_id,
         stage="confirm_address",
         temp_address=parsed  # stored as JSON / dict
@@ -428,7 +428,7 @@ async def address_confirm(cb: CallbackQuery):
 
         
     # Move order forward
-    upsert_checkout(
+    await upsert_checkout(
         user_id,
         stage="packing",
         temp_address=None
@@ -461,7 +461,7 @@ async def address_confirm(cb: CallbackQuery):
 async def address_reenter(cb: CallbackQuery):
     user_id = cb.from_user.id
 
-    upsert_checkout(
+    await upsert_checkout(
         user_id,
         stage="awaiting_address",
         temp_address=None
