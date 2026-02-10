@@ -384,7 +384,7 @@ async def start_shipping(cb: CallbackQuery, callback_data: ShippingActionCB):
 @router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, F.photo)
 async def admin_shipping_photo(message: Message):
     # Find active shipping session waiting for photo
-    session = await get_active_shipping_session_by_admin(message.from_user.id)
+    session = await get_active_shipping_session(message.from_user.id)
 
     if not session:
         return  # No active shipping flow
