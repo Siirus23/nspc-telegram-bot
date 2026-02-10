@@ -289,7 +289,6 @@ async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionC
     invoice_no = callback_data.invoice
 
     async with pool.acquire() as conn:
-        # Mark order as packed
         row = await conn.fetchrow("""
             UPDATE orders
             SET status = 'packed'
@@ -303,7 +302,9 @@ async def handle_packing_action(cb: CallbackQuery, callback_data: PackingActionC
         await cb.bot.send_message(
             row["user_id"],
             "📦 <b>Your order has been packed.</b>",
-            parse_mode_
+            parse_mode="HTML"
+        )
+
 
 
 # ======================================================
