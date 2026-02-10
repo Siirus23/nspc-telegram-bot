@@ -91,7 +91,10 @@ async def admin_panel_actions(cb: CallbackQuery):
         await list_pending_payments(cb.message)
 
     elif action == "packlist":
-        await generate_packlist(cb.message)
+        await cb.message.answer(
+            "⚠️ Packing List is temporarily unavailable during migration.",
+            parse_mode="HTML"
+        )
 
     elif action == "toship":
         await show_orders_ready_to_ship(cb.message)
@@ -819,69 +822,6 @@ async def approve_payment(cb: CallbackQuery, callback_data: PaymentReviewCB):
         )
 
 
-
-async def list_pending_payments(message: Message):
-    with get_db() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT invoice_no, username, total
-            FROM orders
-            WHERE status = 'payment_received'
-            ORDER BY created_at ASC
-        """)
-        rows = cur.fetchall()
-
-    if not rows:
-        await message.answer("✅ No payments awaiting approval.")
-        return
-
-    await message.answer("🕒 <b>Payments Awaiting Approval</b>", parse_mode="HTML")
-
-    from callbacks import PaymentReviewCB
-
-    for r in rows:
-        inv = r["invoice_no"]
-        user = r["username"] or "NoUsername"
-        total = float(r["total"] or 0)
-
-        kb = InlineKeyboardBuilder()
-        kb.button(text="✅ Approve", callback_data=PaymentReviewCB(action="approve", invoice=inv).pack())
-        kb.button(text="❌ Reject", callback_data=PaymentReviewCB(action="reject", invoice=inv).pack())
-        kb.adjust(2)
-
-        text = (
-            f"<b>Invoice:</b> <code>{inv}</code>\n"
-            f"<b>Buyer:</b> @{user}\n"
-            f"<b>Total:</b> ${total:.2f}\n"
-            f"<b>Status:</b> PAYMENT RECEIVED"
-        )
-
-        proof_id, proof_type = get_payment_proof(inv)
-
-        if proof_id and proof_type == "photo":
-            await message.answer_photo(
-                photo=proof_id,
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=kb.as_markup(),
-            )
-        elif proof_id and proof_type == "document":
-            await message.answer_document(
-                document=proof_id,
-                caption=text,
-                parse_mode="HTML",
-                reply_markup=kb.as_markup(),
-            )
-        else:
-            await message.answer(
-                text + "\n\n⚠️ <b>No payment proof saved.</b>",
-                parse_mode="HTML",
-                reply_markup=kb.as_markup(),
-            )
-
-@router.message(F.chat.type == "private", F.from_user.id == ADMIN_ID, Command("pending"))
-async def cmd_pending(message: Message):
-    await list_pending_payments(message)
 
 # ======================================================
 # TRACKING HANDLERS
